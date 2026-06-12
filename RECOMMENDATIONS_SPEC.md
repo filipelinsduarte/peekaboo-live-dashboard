@@ -17,7 +17,7 @@ Each recommendation is:
 - **Evidence-backed**: every todo carries the exact data signals that triggered it ("CompetitorX appeared in 45 AI responses vs ~12 for you")
 - **Actionable**: numbered execution steps, effort estimate, target AI engines, and example URLs the AI models currently cite
 
-The feature is fully dynamic per brand. On every brand switch (or time-range change) the view re-fetches the two API endpoints and re-runs the rule engine, so two brands never see the same plan unless their data is identical. Nothing is hardcoded per brand.
+The feature is fully dynamic per brand. Each brand has its own weekly generation cycle (section 10): on brand switch the view re-fetches the API endpoints and either restores that brand's cached set (fresh) or re-runs the rule engine (expired/missing), so two brands never see the same plan unless their data is identical. Nothing is hardcoded per brand.
 
 User workflow: recommendations land in **Suggested**, the user promotes them to **To-do**, and completes or archives them. That triage state persists per brand (currently in `localStorage`, see section 6).
 
@@ -28,7 +28,7 @@ User workflow: recommendations land in **Suggested**, the user promotes them to 
 ### Where it lives
 
 - `live-app/views/todos.js`: one IIFE containing CSS injection, data normalization, the rule engine, and all UI rendering. Registered as the `todos` view in the local SPA (`PB.registerView('todos', ...)`), reachable at `#/todos`.
-- The local SPA proxies `/api/*` to the real aipeekaboo REST API with the key attached (`live-app/proxy_server.py`), so all data below is real production API data.
+- The local SPA proxies `/api/*` to the real aipeekaboo REST API with the key attached (`live-app/proxy_server.py` locally; `live-app/api/proxy.js` on the Vercel deployments), so all data below is real production API data.
 
 ### Data consumed: four endpoints
 
@@ -223,7 +223,7 @@ GET /brands/:id/recommendations?time_range=30d
 ```
 
 - **Input**: exactly the data the backend already has for the snapshot + prompts + looker endpoints (per-model visibility/sentiment/position come from the looker rows, see section 2), plus the competitor heatmap (which would unlock rule 1's per-model signal expansion).
-- **Implementation path**: port `normalizeSnapshot()`, `perModelStats()`, and `aimGenerateTodos()` from `todos.js` to the backend language. All are pure functions with no DOM or network dependencies, and the existing unit tests (`tests/todos.logic.test.mjs`, 58 tests) define the expected behavior and translate directly into backend test cases.
+- **Implementation path**: port `normalizeSnapshot()`, `perModelStats()`, and `aimGenerateTodos()` from `todos.js` to the backend language. All are pure functions with no DOM or network dependencies, and the existing unit tests (`tests/todos.logic.test.mjs`, 66 tests) define the expected behavior and translate directly into backend test cases.
 - **Advantages**:
   - One maintainable home for the rule logic; new rules ship without a frontend deploy
   - Server-side caching per brand + time range (the output only changes when an analysis runs, so cache until next analysis)
@@ -261,7 +261,7 @@ Header: "Your AI Visibility Action Plan" + subline "Data-driven actions built fr
 - **Priority**: All / High / Medium
 - **Type**: All / Content / Social Media / Reddit / YouTube / Backlinks / Crawlability / Technical SEO
 - **Page**: All / On-page / Off-page
-- **Effort**: All / Low / Medium / High (matched by substring against the `effort` string; see section 9, limitation 5)
+- **Effort**: All / Low / Medium / High (filter values `low` / `med` / `high`, matched by substring against the `effort` label; see section 9, limitation 6)
 - Additionally, the **global topbar model filter** applies: when a model is selected, only todos whose `aiTargets` include that provider (or have no targets) are shown.
 
 ### Table columns
@@ -305,7 +305,7 @@ On every render the sets are purged of ids that no longer exist in the freshly g
 
 ### Misc behaviors
 
-- Skeleton state while the two API calls load
+- Skeleton state while the data fetches load
 - Toast notifications (bottom-center, dark) for every triage action
 - Body-attached chrome (floating bar, popover, toast) hides on route change; the scope class is removed from the view container when navigating away
 
@@ -355,6 +355,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 | `live-app/tests/todos.logic.test.mjs` | 66 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion, weekly cache, merge, YouTube/social/crawlability triggers, looker per-model stats, model-gap/sentiment/Google-AI rule activation, URL-level citation aggregation). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
 | `live-app/index.html` | SPA shell: sidebar nav item (`href="#/todos"`) and `<script src="/views/todos.js">` wiring |
 | `live-app/proxy_server.py` | Local proxy that maps `/api/*` to the real REST API with the key attached |
+| `live-app/api/proxy.js` | Vercel serverless equivalent of the proxy (key from `PEEKABOO_API_KEY` env, 5-min edge cache); serves the live deployments |
 
 ---
 
@@ -365,7 +366,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 3. **URL-level citation data is sampled, not complete.** The detail panel's example lists now use real cited URLs (with page titles and per-URL citation counts) aggregated from the prompt-detail endpoints, which restores per-URL examples, accurate page-type badges, and the URL-pattern strategies at full strength. But the sample covers only the first 12 prompts (~12 API calls per regeneration, weekly), so citation counts are relative to that sample, not the whole prompt set. The domain-level fallback (one synthetic entry per domain) remains for the case where all detail calls fail. Production should aggregate URL-level citations server-side across all runs instead of sampling client-side.
 4. **Per-model data now comes from `/looker/summary`, but the heatmap is still missing.** `latest_by_provider` (visibility/sentiment/position per model) is built client-side by `perModelStats()` from the looker rows, so rules 4 (model gap), 10 (brand sentiment), and 14 (Google AI gap) fire whenever the data supports them (3+ rows per provider, 2+ providers). Two caveats remain: the competitor-by-model heatmap (`aim_real_hm_data`) still arrives empty, so rule 1's per-model signal expansion never renders, and `splitMentions` still approximates per-provider citation counts because the snapshot only gives per-domain totals. Production should compute the per-model stats server-side instead of fetching up to 5,000 looker rows into the browser.
 5. **Provider keys come from string-matching model ids** (`modelIdToProv`: regexes for gpt/gemini/sonar/aio/ai-mode). Adding a new AI model to the platform requires updating this map, or, better, the backend should return a canonical provider key per model.
-6. **Effort filter bug**: generated todos use the string `"Med effort"` but the Medium filter matches the substring `"medium"`, so the Medium effort filter currently returns nothing. Fix in production by making `effort` an enum (`low | medium | high`) and formatting the label in the UI.
+6. **Effort is a display string, not an enum.** Generated todos carry `"Low effort"` / `"Med effort"` / `"High effort"` and the filter substring-matches `low` / `med` / `high` against it (the earlier Medium-filter mismatch is fixed; the dropdown value is `med`). Still brittle: production should make `effort` an enum (`low | medium | high`) and format the label in the UI.
 7. **Priority reassignments and triage state are not account-level.** Priority overrides are lost on reload; added/completed/archived/notes live in `localStorage` per browser. Production needs DB persistence keyed by brand + recommendation id (the deterministic ids make this safe).
 8. **Time range affects inputs only.** `time_range` is passed to the prompts call and used in a few signal labels, but the snapshot endpoint is range-less; a production recommendations endpoint should make the range explicit end to end.
 
