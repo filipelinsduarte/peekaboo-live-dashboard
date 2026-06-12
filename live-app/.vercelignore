@@ -1,0 +1,10 @@
+# never upload the real API key
+config.json
+
+# local-only files not needed in production
+tests/
+capture/
+build_shell.py
+templates/_ref_full.html
+proxy_server.py
+README.md
