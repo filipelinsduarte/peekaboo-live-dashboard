@@ -1,7 +1,9 @@
 /*
  * prompt-detail.logic.test.mjs — unit tests for the pure logic in
  * views/prompt-detail.js (escapeHtml, normalizeSpaces, highlightMentions,
- * formatAnswer, responseTextFor fallback chain).
+ * formatAnswer, responseTextFor fallback chain, plus the v4-page helpers:
+ * groupRunsByDate, dateAggregates, topEntities, previewText,
+ * letterAvatarColor).
  *
  * Run with:  node live-app/tests/prompt-detail.logic.test.mjs
  * (zero dependencies; exits non-zero on failure)
@@ -219,6 +221,175 @@ test('responseTextFor handles a nullish run', () => {
   const r = L.responseTextFor(null);
   assert.equal(r.text, '');
   assert.equal(r.partial, true);
+});
+
+// Values created inside the vm context have different Array/Object prototypes
+// than the host realm, so assert.deepStrictEqual rejects them. Compare by JSON.
+function eqJson(actual, expected, msg) {
+  assert.equal(JSON.stringify(actual), JSON.stringify(expected), msg);
+}
+
+// ── groupRunsByDate ──────────────────────────────────────────────────────────
+test('groupRunsByDate groups runs by date, newest first', () => {
+  const history = [
+    { runId: 'a', date: '2026-06-10', aiModel: 'sonar' },
+    { runId: 'b', date: '2026-06-12', aiModel: 'sonar' },
+    { runId: 'c', date: '2026-06-10', aiModel: 'gpt-4o-mini' },
+    { runId: 'd', date: '2026-06-11', aiModel: 'sonar' },
+  ];
+  const groups = L.groupRunsByDate(history);
+  assert.equal(groups.length, 3);
+  eqJson(groups.map(g => g.date), ['2026-06-12', '2026-06-11', '2026-06-10']);
+  eqJson(groups[2].runs.map(r => r.runId), ['a', 'c'], 'run order within a date is preserved');
+});
+
+test('groupRunsByDate keeps multiple runs of the same model on one date', () => {
+  const groups = L.groupRunsByDate([
+    { runId: 'x', date: '2026-06-12', aiModel: 'sonar' },
+    { runId: 'y', date: '2026-06-12', aiModel: 'sonar' },
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].runs.length, 2);
+});
+
+test('groupRunsByDate handles empty, nullish, and dateless input', () => {
+  eqJson(L.groupRunsByDate([]), []);
+  eqJson(L.groupRunsByDate(null), []);
+  eqJson(L.groupRunsByDate(undefined), []);
+  const groups = L.groupRunsByDate([
+    { runId: 'a' },
+    { runId: 'b', date: '2026-06-12' },
+    null,
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].date, '2026-06-12', 'dated group first');
+  assert.equal(groups[1].date, '', 'dateless runs grouped last');
+  assert.equal(groups[1].runs[0].runId, 'a');
+});
+
+// ── dateAggregates ───────────────────────────────────────────────────────────
+test('dateAggregates computes mean visibility, treating null score as 0', () => {
+  const agg = L.dateAggregates([
+    { score: 50, sentiment: 'positive', rank: 1 },
+    { score: null, sentiment: 'positive', rank: 2 },
+    { score: 100, sentiment: 'negative', rank: 0 },
+  ]);
+  assert.equal(agg.avgVis, 50, '(50 + 0 + 100) / 3 = 50');
+});
+
+test('dateAggregates picks the most frequent non-null sentiment', () => {
+  const agg = L.dateAggregates([
+    { score: 10, sentiment: 'positive' },
+    { score: 10, sentiment: 'positive' },
+    { score: 10, sentiment: 'negative' },
+    { score: 10, sentiment: null },
+  ]);
+  assert.equal(agg.domSentiment, 'positive');
+});
+
+test('dateAggregates averages only ranks > 0 to one decimal', () => {
+  const agg = L.dateAggregates([
+    { score: 10, rank: 1 },
+    { score: 10, rank: 2 },
+    { score: 10, rank: 0 },
+    { score: 10, rank: null },
+  ]);
+  assert.equal(agg.avgPos, 1.5);
+  const agg2 = L.dateAggregates([{ score: 10, rank: 1 }, { score: 10, rank: 2 }, { score: 10, rank: 4 }]);
+  assert.equal(agg2.avgPos, 2.3, 'mean 2.333... rounds to 2.3');
+});
+
+test('dateAggregates returns neutral defaults for empty or nullish runs', () => {
+  eqJson(L.dateAggregates([]), { avgVis: 0, domSentiment: 'neutral', avgPos: null });
+  eqJson(L.dateAggregates(null), { avgVis: 0, domSentiment: 'neutral', avgPos: null });
+  const agg = L.dateAggregates([{ score: 10 }]);
+  assert.equal(agg.domSentiment, 'neutral');
+  assert.equal(agg.avgPos, null);
+});
+
+// ── topEntities ──────────────────────────────────────────────────────────────
+test('topEntities counts brand mentions and citation domains across runs', () => {
+  const history = [
+    {
+      brandMentions: [{ entityName: 'Kueski' }, { entityName: 'Nubank' }],
+      sources: [{ domain: 'kueski.com' }, { domain: 'condusef.gob.mx' }],
+    },
+    {
+      brandMentions: [{ entityName: 'Kueski' }],
+      sources: [{ domain: 'kueski.com' }],
+    },
+  ];
+  const tops = L.topEntities(history);
+  eqJson(tops.topBrands[0], { name: 'Kueski', count: 2 });
+  eqJson(tops.topBrands[1], { name: 'Nubank', count: 1 });
+  eqJson(tops.topCites[0], { domain: 'kueski.com', count: 2 });
+  eqJson(tops.topCites[1], { domain: 'condusef.gob.mx', count: 1 });
+});
+
+test('topEntities caps each list at 5 entries, sorted by count desc', () => {
+  const mentions = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(n => ({ entityName: n }));
+  // give 'G' the highest count so the cap must keep it
+  const history = [
+    { brandMentions: mentions, sources: [] },
+    { brandMentions: [{ entityName: 'G' }], sources: [] },
+  ];
+  const tops = L.topEntities(history);
+  assert.equal(tops.topBrands.length, 5);
+  assert.equal(tops.topBrands[0].name, 'G');
+  assert.equal(tops.topBrands[0].count, 2);
+});
+
+test('topEntities skips blank names/domains and handles empty input', () => {
+  const tops = L.topEntities([
+    { brandMentions: [{ entityName: '' }, { entityName: '  ' }, null], sources: [{ domain: '' }, null] },
+  ]);
+  eqJson(tops, { topBrands: [], topCites: [] });
+  eqJson(L.topEntities(null), { topBrands: [], topCites: [] });
+  eqJson(L.topEntities([]), { topBrands: [], topCites: [] });
+});
+
+// ── previewText ──────────────────────────────────────────────────────────────
+test('previewText prefers fullResponse and truncates at 120 chars', () => {
+  const long = 'x'.repeat(200);
+  const p = L.previewText({ fullResponse: long, responseSnippet: 'snip' });
+  assert.equal(p.text.length, 120);
+  assert.equal(p.truncated, true);
+});
+
+test('previewText falls back to snippet then mentionSummary', () => {
+  const p1 = L.previewText({ responseSnippet: 'the snippet', mentionSummary: 'summary' });
+  assert.equal(p1.text, 'the snippet');
+  assert.equal(p1.truncated, false);
+  const p2 = L.previewText({ mentionSummary: 'summary only' });
+  assert.equal(p2.text, 'summary only');
+});
+
+test('previewText is not truncated at exactly 120 chars', () => {
+  const p = L.previewText({ fullResponse: 'y'.repeat(120) });
+  assert.equal(p.text.length, 120);
+  assert.equal(p.truncated, false);
+});
+
+test('previewText handles empty and nullish runs', () => {
+  eqJson(L.previewText({}), { text: '', truncated: false });
+  eqJson(L.previewText(null), { text: '', truncated: false });
+});
+
+// ── letterAvatarColor ────────────────────────────────────────────────────────
+test('letterAvatarColor is deterministic and stays in the v4 palette', () => {
+  const palette = ['#b352b3', '#10b981', '#2563eb', '#8b5cf6', '#64748b', '#06b6d4', '#f59e0b', '#f472b6', '#38bdf8', '#94a3b8'];
+  const c1 = L.letterAvatarColor('Kueski');
+  const c2 = L.letterAvatarColor('Kueski');
+  assert.equal(c1, c2, 'same name always hashes to the same color');
+  assert.ok(palette.includes(c1), 'color must come from the palette: ' + c1);
+  assert.ok(palette.includes(L.letterAvatarColor('Nubank')));
+});
+
+test('letterAvatarColor handles empty and nullish names', () => {
+  const palette = ['#b352b3', '#10b981', '#2563eb', '#8b5cf6', '#64748b', '#06b6d4', '#f59e0b', '#f472b6', '#38bdf8', '#94a3b8'];
+  assert.ok(palette.includes(L.letterAvatarColor('')));
+  assert.ok(palette.includes(L.letterAvatarColor(null)));
+  assert.ok(palette.includes(L.letterAvatarColor(undefined)));
 });
 
 // ── summary ──────────────────────────────────────────────────────────────────

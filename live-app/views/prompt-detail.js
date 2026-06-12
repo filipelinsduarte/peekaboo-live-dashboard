@@ -5,14 +5,32 @@
  * the router sets ctx.param to a promptId (hash #/prompts/:id). Loaded before
  * boot so prompts.js can call it.
  *
- * Sections:
- *   - back link to #/prompts; header: prompt text + category/intent badges +
- *     summary metric cards (averageScore, totalRuns, trend).
- *   - "Competitors on this prompt" table (competitorSummary).
- *   - "Sources cited" table (sourceSummary).
- *   - "Run history" list (history[], newest first) with optional brandMentions
- *     ranked chips per run. Each run row is clickable and opens the full
- *     AI-answer modal.
+ * Page layout: pixel-faithful port of the v4 prompt detail page
+ * (~/Desktop/ai-monitoring-dashboard-v4.html, aimOpenPromptDetail lines
+ * 7303-7494 + CSS at 944-961, 963-988, 1003-1010, 1083-1091):
+ *   - back button ("Back to Prompts")
+ *   - header card: prompt text, topic + intent badges, frequency/last-run
+ *     caption, stats row (Visibility / Sentiment / Avg Position / Run days)
+ *     plus Top Brands + Top Citations icon clusters.
+ *   - "Response History" section: one collapsible section per run date
+ *     (newest first, only the latest expanded) with a 7-column table:
+ *     Model | Response Preview | Sentiment | Visibility | Avg Position |
+ *     Mentions | Citations. Each data row opens the full-answer modal.
+ *
+ * Adaptations from v4 to the live API:
+ *   - Data is detail.history[] from PB.api.promptDetail(.., full=true), not
+ *     window._aimPromptResponseHistory. Dates and per-model rows are grouped
+ *     from history[] (groupRunsByDate).
+ *   - Model badges use PB.modelLogo/PB.modelLabel for the live model slugs.
+ *   - brandMentions entries carry NO domain field, so mention icons are
+ *     deterministic letter avatars (the v4 aimBrandIcon fallback path); we
+ *     never guess domain URLs. Citation icons use real domains via
+ *     PB.favicon(sources[].domain).
+ *   - "No data for this date" filler rows are shown for models that ran on
+ *     other dates of this prompt (consistent model set across sections), not
+ *     a hardcoded provider list.
+ *   - frequency in the caption comes from the brand's analysisFrequency in
+ *     PB.state.brands; omitted when unknown.
  *
  * Full-answer modal: pixel-faithful port of the v4 response modal
  * (~/Desktop/ai-monitoring-dashboard-v4.html, #aim-response-modal /
@@ -23,6 +41,8 @@
  *   - CSS injected once as <style id="pb-prompt-modal-css">, scoped under
  *     .pb-rm-scope so nothing leaks into other views (same pattern as
  *     todos.js / injectTodosCSS, including the v4 design-token block).
+ *     Page CSS is a sibling <style id="pb-prompt-page-css"> scoped under
+ *     .pb-pd-scope.
  *   - Escape key + scroll lock added (the live SPA convention); v4 only had
  *     backdrop click and the close button.
  *   - Note: v4 applies NO brand highlighting inside the response text (bold
@@ -30,7 +50,8 @@
  *     still implemented and exposed as pure logic for tests / future use.
  *
  * Pure logic (escapeHtml, normalizeSpaces, highlightMentions, formatAnswer,
- * responseTextFor) is exposed as window.PBPromptDetailLogic so it can be
+ * responseTextFor, groupRunsByDate, dateAggregates, topEntities, previewText,
+ * letterAvatarColor) is exposed as window.PBPromptDetailLogic so it can be
  * unit-tested with node (tests/prompt-detail.logic.test.mjs), same pattern
  * as PBTodosLogic.
  */
@@ -59,7 +80,7 @@
   function normalizeSpaces(s) {
     if (s === null || s === undefined) return '';
     var t = String(s);
-    t = t.replace(/ /g, ' ');
+    t = t.replace(/\u00a0/g, ' ');
     t = t.replace(/&nbsp;/g, ' ');
     t = t.replace(/\r\n/g, '\n');
     t = t.replace(/\r/g, '\n');
@@ -166,12 +187,148 @@
     return { text: alt, partial: true };
   }
 
+  // Group history runs by their "YYYY-MM-DD" date, newest date first.
+  // Runs without a date are grouped under "" and sort last. Returns
+  // [{ date, runs: [...] }] preserving the original run order within a date.
+  function groupRunsByDate(history) {
+    if (!history || !history.length) return [];
+    var byDate = {};
+    var order = [];
+    history.forEach(function (run) {
+      if (!run) return;
+      var d = run.date ? String(run.date) : '';
+      if (!Object.prototype.hasOwnProperty.call(byDate, d)) {
+        byDate[d] = [];
+        order.push(d);
+      }
+      byDate[d].push(run);
+    });
+    // "YYYY-MM-DD" sorts correctly as a string; "" sorts last in desc order.
+    order.sort(function (a, b) {
+      if (a === b) return 0;
+      return a > b ? -1 : 1;
+    });
+    return order.map(function (d) {
+      return { date: d, runs: byDate[d] };
+    });
+  }
+
+  // Header aggregates for a set of runs (one date section, or the whole
+  // history for the page header): mean visibility score (null scores count
+  // as 0, like v4), dominant non-null sentiment (most frequent, fallback
+  // "neutral"), and mean of rank values > 0 rounded to 1 decimal (null when
+  // no usable ranks).
+  function dateAggregates(runs) {
+    runs = (runs || []).filter(function (r) { return !!r; });
+    if (!runs.length) return { avgVis: 0, domSentiment: 'neutral', avgPos: null };
+
+    var visSum = 0;
+    runs.forEach(function (r) {
+      var v = (r.score === null || r.score === undefined) ? 0 : Number(r.score);
+      if (isNaN(v)) v = 0;
+      visSum += v;
+    });
+    var avgVis = Math.round(visSum / runs.length);
+
+    var sentCounts = {};
+    runs.forEach(function (r) {
+      if (!r.sentiment) return;
+      var s = String(r.sentiment).toLowerCase();
+      sentCounts[s] = (sentCounts[s] || 0) + 1;
+    });
+    var domSentiment = 'neutral';
+    var best = 0;
+    Object.keys(sentCounts).forEach(function (s) {
+      if (sentCounts[s] > best) {
+        best = sentCounts[s];
+        domSentiment = s;
+      }
+    });
+
+    var posVals = [];
+    runs.forEach(function (r) {
+      var p = Number(r.rank);
+      if (r.rank !== null && r.rank !== undefined && !isNaN(p) && p > 0) posVals.push(p);
+    });
+    var avgPos = null;
+    if (posVals.length) {
+      var posSum = 0;
+      posVals.forEach(function (p) { posSum += p; });
+      avgPos = Number((posSum / posVals.length).toFixed(1));
+    }
+
+    return { avgVis: avgVis, domSentiment: domSentiment, avgPos: avgPos };
+  }
+
+  // Aggregate brand-mention names and citation domains across all runs.
+  // Returns { topBrands: [{name, count}], topCites: [{domain, count}] },
+  // each sorted by count desc (name/domain asc as tie-break), top 5.
+  function topEntities(history) {
+    var brandCounts = {};
+    var domainCounts = {};
+    (history || []).forEach(function (run) {
+      if (!run) return;
+      (run.brandMentions || []).forEach(function (m) {
+        if (!m) return;
+        var name = String(m.entityName || '').trim();
+        if (!name) return;
+        brandCounts[name] = (brandCounts[name] || 0) + 1;
+      });
+      (run.sources || []).forEach(function (s) {
+        if (!s) return;
+        var dom = String(s.domain || '').trim();
+        if (!dom) return;
+        domainCounts[dom] = (domainCounts[dom] || 0) + 1;
+      });
+    });
+    function top5(counts, key) {
+      return Object.keys(counts)
+        .map(function (k) {
+          var entry = {};
+          entry[key] = k;
+          entry.count = counts[k];
+          return entry;
+        })
+        .sort(function (a, b) {
+          if (b.count !== a.count) return b.count - a.count;
+          return a[key] < b[key] ? -1 : (a[key] > b[key] ? 1 : 0);
+        })
+        .slice(0, 5);
+    }
+    return { topBrands: top5(brandCounts, 'name'), topCites: top5(domainCounts, 'domain') };
+  }
+
+  // Table preview cell text: first 120 chars of the run's text with the v4
+  // fallback chain (fullResponse, then snippet, then mention summary) and a
+  // truncated flag so the renderer can append an ellipsis.
+  function previewText(run) {
+    run = run || {};
+    var src = run.fullResponse || run.responseSnippet || run.mentionSummary || '';
+    src = normalizeSpaces(src);
+    return { text: src.substring(0, 120), truncated: src.length > 120 };
+  }
+
+  // v4 aimBrandIcon letter-fallback palette hash (line 5898): deterministic
+  // color for a brand name. Exposed as pure logic; brandLetterIcon uses it.
+  var LETTER_PALETTE = ['#b352b3', '#10b981', '#2563eb', '#8b5cf6', '#64748b', '#06b6d4', '#f59e0b', '#f472b6', '#38bdf8', '#94a3b8'];
+  function letterAvatarColor(name) {
+    var n = String(name === null || name === undefined ? '?' : name);
+    var h = 0;
+    for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) & 0xffff;
+    return LETTER_PALETTE[h % LETTER_PALETTE.length];
+  }
+
   window.PBPromptDetailLogic = {
     escapeHtml: escapeHtml,
     normalizeSpaces: normalizeSpaces,
     highlightMentions: highlightMentions,
     formatAnswer: formatAnswer,
     responseTextFor: responseTextFor,
+    groupRunsByDate: groupRunsByDate,
+    dateAggregates: dateAggregates,
+    topEntities: topEntities,
+    previewText: previewText,
+    letterAvatarColor: letterAvatarColor,
   };
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -179,7 +336,8 @@
   // ══════════════════════════════════════════════════════════════════════════
 
   window.PBPromptDetail = async function (root, ctx) {
-    var promptId = ctx.param;
+    if (!root) return;
+    var promptId = ctx && ctx.param;
 
     var detail = null;
     try {
@@ -187,216 +345,407 @@
       detail = await PB.api.promptDetail(ctx.brandId, promptId, ctx.range, true);
     } catch (err) {
       PB.toast((err && err.message) || 'Could not load prompt', true);
+      injectModalCSS();
+      injectPageCSS();
       root.innerHTML = '';
-      root.appendChild(backLink());
-      root.appendChild(el('div', { class: 'pb-card pb-card-pad text-sm text-muted' },
-        'Could not load this prompt. ' + ((err && err.message) || '')));
-      if (window.lucide) window.lucide.createIcons();
+      var errWrap = el('div', { class: 'pb-pd-scope' }, [
+        backButton(),
+        el('div', { class: 'pb-pd-card', text: 'Could not load this prompt. ' + ((err && err.message) || '') }),
+      ]);
+      root.appendChild(errWrap);
       return;
     }
 
     detail = detail || {};
     injectModalCSS();
+    injectPageCSS();
+
+    var history = detail.history || [];
+    var groups = groupRunsByDate(history);
+    var tops = topEntities(history);
+
     root.innerHTML = '';
-    root.appendChild(backLink());
+    var wrap = el('div', { class: 'pb-pd-scope' });
+    wrap.appendChild(backButton());
+    wrap.appendChild(buildHeaderCard(detail, ctx, groups, tops));
+    wrap.appendChild(buildSectionTitle(groups.length));
 
-    // ---- header -------------------------------------------------------------
-    root.appendChild(buildHeader(detail, ctx));
+    if (!groups.length) {
+      wrap.appendChild(el('div', {
+        style: { color: 'var(--text-faint)', fontSize: '13px', padding: '20px 0' },
+        text: 'No response history available yet.',
+      }));
+    } else {
+      var allModels = modelOrder(history);
+      groups.forEach(function (group, idx) {
+        wrap.appendChild(buildDateSection(group, idx === 0, allModels, detail));
+      });
+    }
 
-    // ---- two-column: competitors + sources ----------------------------------
-    var row = el('div', { class: 'grid gap-4 lg:grid-cols-2' });
-    row.appendChild(buildCompetitorsCard(detail.competitorSummary || []));
-    row.appendChild(buildSourcesCard(detail.sourceSummary || []));
-    root.appendChild(row);
-
-    // ---- run history --------------------------------------------------------
-    root.appendChild(buildHistoryCard(detail.history || [], detail));
-
-    if (window.lucide) window.lucide.createIcons();
+    root.appendChild(wrap);
   };
 
-  // ---- back link ------------------------------------------------------------
-  function backLink() {
-    return el('a', {
-      class: 'inline-flex items-center gap-1 text-sm text-muted hover:text-gray-900',
-      href: '#/prompts',
-      style: { marginBottom: '2px' },
-    }, [
-      el('i', { 'data-lucide': 'arrow-left', style: { width: '15px', height: '15px' } }),
-      el('span', { text: 'Back to prompts' }),
-    ]);
+  // ---- back button (v4 .aim-pd-back) -----------------------------------------
+  var SVG_BACK_ARROW = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var SVG_CALENDAR = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="2" width="11" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4.5 1v2M8.5 1v2M1 5.5h11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+  var SVG_CHEVRON_PATH = '<path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+
+  function backButton() {
+    var btn = el('a', { class: 'pb-pd-back', href: '#/prompts' });
+    var arrow = el('span', { class: 'pb-pd-back-ico', html: SVG_BACK_ARROW });
+    btn.appendChild(arrow);
+    btn.appendChild(el('span', { text: 'Back to Prompts' }));
+    return btn;
   }
 
   // ---- header card ----------------------------------------------------------
-  function buildHeader(detail, ctx) {
+  function buildHeaderCard(detail, ctx, groups, tops) {
     var summary = detail.summary || {};
-    var badges = el('div', { class: 'flex items-center gap-2 flex-wrap mt-2' }, [
-      detail.category ? el('span', { class: 'pb-badge', text: detail.category }) : null,
-      detail.searchIntent ? el('span', { class: 'pb-badge pb-badge-brand', text: prettyIntent(detail.searchIntent) }) : null,
+    var agg = dateAggregates(detail.history || []);
+
+    // topic + intent badges
+    var badgeRow = el('div', { class: 'pb-pd-badge-row' });
+    if (detail.category) {
+      badgeRow.appendChild(el('span', { class: 'pb-pd-topic-badge' }, [
+        el('span', { class: 'pb-pd-topic-dot', style: { color: letterAvatarColor(detail.category) }, text: '●' }),
+        el('span', { text: detail.category }),
+      ]));
+    }
+    if (detail.searchIntent) {
+      var intentCls = String(detail.searchIntent).toLowerCase();
+      badgeRow.appendChild(el('span', {
+        class: 'pb-pd-intent-badge ' + intentCls,
+        text: prettyIntent(detail.searchIntent),
+      }));
+    }
+
+    // caption: "{frequency} · Last run: {Month D, YYYY}"
+    var freq = brandFrequency(ctx);
+    var lastRunDate = groups.length ? groups[0].date : '';
+    var captionParts = [];
+    if (freq) captionParts.push(freq);
+    captionParts.push('Last run: ' + (lastRunDate ? fmtDateLong(lastRunDate) : '–'));
+    var caption = el('span', { class: 'pb-pd-caption', text: captionParts.join(' · ') });
+
+    var promptBlock = el('div', { style: { marginBottom: '12px' } }, [
+      el('div', { class: 'pb-pd-prompt-text', text: detail.promptText || 'Untitled prompt' }),
+      badgeRow,
+      caption,
     ]);
 
-    var metricDefs = [
-      { label: 'Avg Score', value: fmt.score(summary.averageScore) },
-      { label: 'Total Runs', value: fmt.int(summary.totalRuns) },
-      { label: 'Trend', value: null, trend: summary.trend || 'stable' },
-    ];
-    var metricStrip = el('div', { class: 'grid grid-cols-3 gap-3 mt-3', style: { maxWidth: '480px' } });
-    metricDefs.forEach(function (m) {
-      var valueNode = m.trend
-        ? trendBadge(m.trend)
-        : el('div', { class: 'text-2xl font-semibold', text: m.value });
-      metricStrip.appendChild(el('div', { class: 'pb-card', style: { padding: '0.7rem 0.9rem' } }, [
-        el('div', { class: 'text-[11px] uppercase tracking-wide text-muted font-medium', text: m.label }),
-        el('div', { class: 'mt-1', style: { minHeight: '32px', display: 'flex', alignItems: 'center' } }, [valueNode]),
-      ]));
+    // stats row
+    var visValue = (summary.averageScore === null || summary.averageScore === undefined)
+      ? '–' : Math.round(summary.averageScore) + '%';
+    // v4 shows one decimal here ("#1.0"), via toFixed(1)
+    var posValue = agg.avgPos !== null ? '#' + agg.avgPos.toFixed(1) : '–';
+
+    var statCluster = el('div', { class: 'pb-pd-stat-cluster' }, [
+      el('div', {}, [
+        el('div', { class: 'pb-pd-stat-value accent', text: visValue }),
+        el('div', { class: 'pb-pd-stat-label', text: 'Visibility' }),
+      ]),
+      el('div', {}, [
+        el('div', { class: 'pb-pd-stat-value', style: { lineHeight: '1.4' } }, [
+          sentBadge(agg.domSentiment),
+        ]),
+        el('div', { class: 'pb-pd-stat-label', text: 'Sentiment' }),
+      ]),
+      el('div', {}, [
+        el('div', { class: 'pb-pd-stat-value muted', text: posValue }),
+        el('div', { class: 'pb-pd-stat-label', text: 'Avg Position' }),
+      ]),
+      el('div', {}, [
+        el('div', { class: 'pb-pd-stat-value muted', text: String(groups.length) }),
+        el('div', { class: 'pb-pd-stat-label', text: 'Run days' }),
+      ]),
+    ]);
+
+    // Top Brands cluster: deterministic letter avatars (no domains in the API)
+    var brandIcons = el('div', { class: 'pb-pd-icon-row' });
+    if (tops.topBrands.length) {
+      tops.topBrands.slice(0, 4).forEach(function (b) {
+        var icon = brandLetterIcon(b.name, 22);
+        icon.title = b.name;
+        brandIcons.appendChild(icon);
+      });
+      if (tops.topBrands.length > 4) {
+        brandIcons.appendChild(el('span', { class: 'pb-pd-icon-more', text: '+' + (tops.topBrands.length - 4) }));
+      }
+    } else {
+      brandIcons.appendChild(el('span', { class: 'pb-pd-icon-empty', text: '–' }));
+    }
+    var brandCluster = el('div', { class: 'pb-pd-side-cluster' }, [
+      brandIcons,
+      el('div', { class: 'pb-pd-side-label', text: 'Top Brands' }),
+    ]);
+
+    // Top Citations cluster: real favicons from sources[].domain
+    var citeIcons = el('div', { class: 'pb-pd-icon-row' });
+    if (tops.topCites.length) {
+      tops.topCites.slice(0, 4).forEach(function (c) {
+        citeIcons.appendChild(el('img', {
+          class: 'pb-pd-cite-icon',
+          src: PB.favicon(c.domain),
+          title: c.domain,
+          alt: '',
+          onerror: "this.style.visibility='hidden'",
+        }));
+      });
+      if (tops.topCites.length > 4) {
+        citeIcons.appendChild(el('span', { class: 'pb-pd-icon-more', text: '+' + (tops.topCites.length - 4) }));
+      }
+    } else {
+      citeIcons.appendChild(el('span', { class: 'pb-pd-icon-empty', text: '–' }));
+    }
+    var citeCluster = el('div', { class: 'pb-pd-side-cluster' }, [
+      citeIcons,
+      el('div', { class: 'pb-pd-side-label', text: 'Top Citations' }),
+    ]);
+
+    var statsRow = el('div', { class: 'pb-pd-stats' }, [statCluster, brandCluster, citeCluster]);
+
+    return el('div', { class: 'pb-pd-card' }, [promptBlock, statsRow]);
+  }
+
+  // Brand analysisFrequency from PB.state.brands, prettified ("WEEKLY" ->
+  // "Weekly"); empty string when unknown so the caption can omit it.
+  function brandFrequency(ctx) {
+    try {
+      var brands = (PB.state && PB.state.brands) || [];
+      var brand = null;
+      for (var i = 0; i < brands.length; i++) {
+        if (brands[i] && brands[i].id === (ctx && ctx.brandId)) {
+          brand = brands[i];
+          break;
+        }
+      }
+      if (brand && brand.analysisFrequency) return prettyIntent(brand.analysisFrequency);
+    } catch (e) { /* caption degrades gracefully */ }
+    return '';
+  }
+
+  // ---- section title ----------------------------------------------------------
+  function buildSectionTitle(dayCount) {
+    var suffix = dayCount + ' day' + (dayCount === 1 ? '' : 's') + ' · click a row to read the full response';
+    return el('div', { class: 'pb-pd-section-title' }, [
+      'Response History ',
+      el('span', { text: suffix }),
+    ]);
+  }
+
+  // ---- model ordering ---------------------------------------------------------
+  // Distinct model slugs across the whole history, ordered by the global
+  // PB.models order where known, then by first appearance. Drives the
+  // consistent row set (incl. "No data for this date" fillers) per section.
+  function modelOrder(history) {
+    var seen = [];
+    (history || []).forEach(function (run) {
+      if (!run || !run.aiModel) return;
+      if (seen.indexOf(run.aiModel) === -1) seen.push(run.aiModel);
+    });
+    var known = (PB.models || []).map(function (m) { return m.tag; });
+    seen.sort(function (a, b) {
+      var ia = known.indexOf(a);
+      var ib = known.indexOf(b);
+      if (ia === -1 && ib === -1) return seen.indexOf(a) - seen.indexOf(b);
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
+    });
+    return seen;
+  }
+
+  // ---- date section (collapsible) ----------------------------------------------
+  function buildDateSection(group, isLatest, allModels, detail) {
+    var agg = dateAggregates(group.runs);
+    var modelsHere = [];
+    group.runs.forEach(function (r) {
+      if (r && r.aiModel && modelsHere.indexOf(r.aiModel) === -1) modelsHere.push(r.aiModel);
     });
 
-    var body = el('div', {}, [
-      el('div', { class: 'text-lg font-semibold leading-snug', text: detail.promptText || 'Untitled prompt' }),
-      badges,
-      metricStrip,
+    // ---- header bar ----
+    var chevron = el('span', {
+      class: 'pb-pd-chevron',
+      html: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none">' + SVG_CHEVRON_PATH + '</svg>',
+      style: { transform: 'rotate(' + (isLatest ? '0' : '-90') + 'deg)' },
+    });
+    var chevBtn = el('button', { class: 'pb-pd-chev-btn', type: 'button', 'aria-label': 'Toggle date section' }, [chevron]);
+
+    var left = el('div', { class: 'pb-pd-day-left' }, [
+      el('span', { class: 'pb-pd-cal-ico', html: SVG_CALENDAR }),
+      el('span', { class: 'pb-pd-day-date', text: group.date ? fmtDateLong(group.date) : 'Unknown date' }),
+      isLatest ? el('span', { class: 'pb-pd-latest-badge', text: 'Latest' }) : null,
+      el('span', { class: 'pb-pd-day-faint', text: modelsHere.length + ' models' }),
+      el('span', { class: 'pb-pd-day-divider' }),
+      el('span', {
+        class: 'pb-pd-day-vis' + (agg.avgVis > 0 ? ' on' : ''),
+        text: agg.avgVis + '% vis',
+      }),
+      sentBadge(agg.domSentiment, true),
+      el('span', { class: 'pb-pd-day-pos', text: '#' + (agg.avgPos !== null ? agg.avgPos.toFixed(1) : '–') + ' pos' }),
     ]);
-    return PB.card(
-      PB.cardTitle('Prompt', 'Performance over ' + ctx.range),
-      body
-    );
+
+    var head = el('div', {
+      class: 'pb-pd-day-head',
+      style: { borderBottom: '1px solid ' + (isLatest ? 'var(--border)' : 'transparent') },
+    }, [left, chevBtn]);
+
+    // ---- body (table) ----
+    var body = el('div', { class: 'pb-pd-day-body', style: { display: isLatest ? '' : 'none' } }, [
+      buildDayTable(group, allModels, detail),
+    ]);
+
+    var section = el('div', { class: 'pb-pd-day-section' }, [head, body]);
+
+    function toggle() {
+      if (!body) return;
+      var collapsed = body.style.display === 'none';
+      body.style.display = collapsed ? '' : 'none';
+      if (chevron) chevron.style.transform = collapsed ? 'rotate(0deg)' : 'rotate(-90deg)';
+      if (head) head.style.borderBottom = '1px solid ' + (collapsed ? 'var(--border)' : 'transparent');
+    }
+    head.addEventListener('click', toggle);
+    chevBtn.addEventListener('click', function (ev) {
+      // the bar is also clickable; stop the bubble so it does not double-toggle
+      ev.stopPropagation();
+      toggle();
+    });
+
+    return section;
   }
 
-  // ---- competitors card -----------------------------------------------------
-  function buildCompetitorsCard(comps) {
-    var body;
-    if (!comps.length) {
-      body = el('div', { class: 'text-sm text-muted py-8 text-center' }, 'No competitors mentioned on this prompt.');
-    } else {
-      var table = el('table', { class: 'pb-table' });
-      table.appendChild(el('thead', {}, el('tr', {}, [
-        el('th', { text: 'Entity' }),
-        el('th', { text: 'Type' }),
-        el('th', { text: 'Avg Score' }),
-        el('th', { text: 'Mentions' }),
-        el('th', { text: 'Avg Rank' }),
-      ])));
-      var tb = el('tbody');
-      comps.forEach(function (c) {
-        tb.appendChild(el('tr', {}, [
-          el('td', {}, el('span', { class: 'font-medium', text: c.entityName || '—' })),
-          el('td', {}, typeBadge(c.type)),
-          el('td', {}, el('span', { class: 'font-medium', text: fmt.score(c.averageScore) })),
-          el('td', { class: 'text-xs text-muted', text: fmt.int(c.mentionCount) }),
-          el('td', { class: 'text-xs text-muted', text: (c.averageRank === null || c.averageRank === undefined) ? '—' : fmt.num1(c.averageRank) }),
+  function buildDayTable(group, allModels, detail) {
+    var table = el('table', { class: 'pb-pd-table' });
+    table.appendChild(el('thead', {}, el('tr', {}, [
+      el('th', { text: 'Model' }),
+      el('th', { text: 'Response Preview' }),
+      el('th', { text: 'Sentiment' }),
+      el('th', { text: 'Visibility' }),
+      el('th', { text: 'Avg Position' }),
+      el('th', { text: 'Mentions' }),
+      el('th', { text: 'Citations' }),
+    ])));
+
+    var tbody = el('tbody');
+    var runsByModel = {};
+    var extraRuns = [];
+    group.runs.forEach(function (r) {
+      if (!r) return;
+      var m = r.aiModel;
+      if (!m) {
+        extraRuns.push(r);
+        return;
+      }
+      if (!runsByModel[m]) runsByModel[m] = [];
+      runsByModel[m].push(r);
+    });
+
+    allModels.forEach(function (model) {
+      var runs = runsByModel[model] || [];
+      if (!runs.length) {
+        // Filler row: this model ran on other dates of this prompt
+        tbody.appendChild(el('tr', {}, [
+          el('td', {}, [modelBadge(model)]),
+          el('td', {
+            colspan: '6',
+            class: 'pb-pd-nodata',
+            text: 'No data for this date',
+          }),
         ]));
+        return;
+      }
+      runs.forEach(function (run) {
+        tbody.appendChild(buildRunRow(run, detail));
       });
-      table.appendChild(tb);
-      body = table;
-    }
-    return PB.card(
-      PB.cardTitle('Competitors on this prompt', 'Entities the AI surfaced for this query'),
-      body
-    );
+    });
+    extraRuns.forEach(function (run) {
+      tbody.appendChild(buildRunRow(run, detail));
+    });
+
+    table.appendChild(tbody);
+    return el('div', { class: 'pb-pd-table-wrap' }, [table]);
   }
 
-  // ---- sources card ---------------------------------------------------------
-  function buildSourcesCard(sources) {
-    var body;
-    if (!sources.length) {
-      body = el('div', { class: 'text-sm text-muted py-8 text-center' }, 'No sources cited on this prompt.');
-    } else {
-      var table = el('table', { class: 'pb-table' });
-      table.appendChild(el('thead', {}, el('tr', {}, [
-        el('th', { text: 'Domain' }),
-        el('th', { text: 'Mentions' }),
-        el('th', { text: 'Models' }),
-      ])));
-      var tb = el('tbody');
-      sources.forEach(function (s) {
-        tb.appendChild(el('tr', {}, [
-          el('td', {}, el('div', { class: 'flex items-center gap-2' }, [
-            el('img', { class: 'pb-fav', src: PB.favicon(s.domain), onerror: "this.style.visibility='hidden'" }),
-            el('span', { class: 'font-medium', text: s.domain || '—' }),
-          ])),
-          el('td', { class: 'font-medium', text: fmt.int(s.mentions) }),
-          el('td', {}, el('div', { class: 'flex items-center gap-1' }, (s.aiModels || []).slice(0, 6).map(function (m) {
-            return el('img', { class: 'pb-fav', style: { width: '14px', height: '14px', borderRadius: '50%' }, src: PB.modelLogo(m), title: PB.modelLabel(m) });
-          }))),
-        ]));
-      });
-      table.appendChild(tb);
-      body = table;
-    }
-    return PB.card(
-      PB.cardTitle('Sources cited', 'Domains referenced in the AI responses'),
-      body
-    );
-  }
-
-  // ---- run history card -----------------------------------------------------
-  function buildHistoryCard(history, detail) {
-    var body;
-    if (!history.length) {
-      body = el('div', { class: 'text-sm text-muted py-8 text-center' }, 'No run history for this prompt yet.');
-    } else {
-      var list = el('div', { class: 'space-y-2' });
-      history.forEach(function (run) {
-        list.appendChild(buildRunRow(run, detail));
-      });
-      body = list;
-    }
-    return PB.card(
-      PB.cardTitle('Run history', fmt.int(history.length) + ' runs · newest first · click a run to read the full response'),
-      body
-    );
+  function modelBadge(modelSlug) {
+    return el('span', { class: 'pb-pd-model-badge' }, [
+      el('img', { src: PB.modelLogo(modelSlug), alt: '', onerror: "this.style.visibility='hidden'" }),
+      el('span', { text: PB.modelLabel(modelSlug) || 'Unknown' }),
+    ]);
   }
 
   function buildRunRow(run, detail) {
     run = run || {};
-    var mentioned = !!run.mentioned;
 
-    var topLine = el('div', { class: 'flex items-center gap-2 flex-wrap' }, [
-      el('img', { class: 'pb-fav', style: { width: '16px', height: '16px', borderRadius: '50%' }, src: PB.modelLogo(run.aiModel), title: PB.modelLabel(run.aiModel) }),
-      el('span', { class: 'text-sm font-medium', text: PB.modelLabel(run.aiModel) }),
-      el('span', { class: 'text-[11px] text-muted', text: fmt.date(run.date) }),
-      el('span', { class: 'flex-1' }),
-      el('span', { class: 'pb-badge', text: 'Score ' + fmt.score(run.score) }),
-      (run.rank === null || run.rank === undefined) ? null : el('span', { class: 'pb-badge', text: 'Rank ' + run.rank }),
-      mentioned
-        ? el('span', { class: 'pb-badge pb-badge-green', text: 'Mentioned' })
-        : el('span', { class: 'pb-badge', text: 'Not mentioned' }),
-      run.sentiment ? sentimentBadge(run.sentiment) : null,
-    ]);
+    // Response Preview (escaped via textContent; ellipsis when truncated)
+    var prev = previewText(run);
+    var previewNode = el('p', { class: 'pb-pd-preview', text: prev.text + (prev.truncated ? '…' : '') });
 
-    var children = [topLine];
-
-    var snippet = run.responseSnippet || run.mentionSummary;
-    if (snippet) {
-      children.push(el('div', { class: 'text-[13px] text-gray-700 leading-snug mt-1.5', text: snippet }));
+    // Visibility
+    var visNode;
+    if (run.score === null || run.score === undefined) {
+      visNode = el('span', { class: 'pb-pd-dash', text: '–' });
+    } else {
+      visNode = el('span', {
+        class: 'pb-pd-vis' + (Number(run.score) > 0 ? ' on' : ''),
+        text: Math.round(run.score) + '%',
+      });
     }
 
-    // optional ranked brand-mention chips
+    // Avg Position
+    var posNode;
+    var rankNum = Number(run.rank);
+    if (run.rank !== null && run.rank !== undefined && !isNaN(rankNum) && rankNum > 0) {
+      var rankTxt = Number.isInteger(rankNum) ? String(rankNum) : rankNum.toFixed(1);
+      posNode = el('span', { class: 'pb-pd-pos', text: '#' + rankTxt });
+    } else {
+      posNode = el('span', { class: 'pb-pd-dash', text: '–' });
+    }
+
+    // Mentions: top-3 deterministic letter avatars (API has no brand domains)
     var mentions = run.brandMentions || [];
+    var mentNode;
     if (mentions.length) {
-      var chips = el('div', { class: 'flex items-center gap-1.5 flex-wrap mt-2' });
-      chips.appendChild(el('span', { class: 'text-[11px] text-muted', text: 'Also mentioned:' }));
-      mentions.slice(0, 12).forEach(function (m) {
-        var rankTxt = (m.rank === null || m.rank === undefined) ? '' : '#' + m.rank + ' ';
-        chips.appendChild(el('span', {
-          class: 'pb-badge',
-          style: { display: 'inline-flex', alignItems: 'center', gap: '4px' },
-          title: m.mentionSummary || '',
-        }, [
-          el('span', { class: 'text-muted', text: rankTxt }),
-          el('span', { text: m.entityName || '—' }),
-        ]));
+      mentNode = el('div', { class: 'pb-pd-cell-icons' });
+      mentions.slice(0, 3).forEach(function (m) {
+        var name = (m && m.entityName) || '?';
+        var icon = brandLetterIcon(name, 16);
+        icon.title = name;
+        mentNode.appendChild(icon);
       });
-      children.push(chips);
+      if (mentions.length > 3) {
+        mentNode.appendChild(el('span', { class: 'pb-pd-icon-more', text: '+' + (mentions.length - 3) }));
+      }
+    } else {
+      mentNode = el('span', { class: 'pb-pd-dash', text: '–' });
+    }
+
+    // Citations: top-3 real favicons from sources[].domain
+    var sources = (run.sources || []).filter(function (s) { return s && s.domain; });
+    var citNode;
+    if (sources.length) {
+      citNode = el('div', { class: 'pb-pd-cell-icons' });
+      sources.slice(0, 3).forEach(function (s) {
+        citNode.appendChild(el('img', {
+          class: 'pb-pd-cite-icon sm',
+          src: PB.favicon(s.domain),
+          title: s.domain,
+          alt: '',
+          onerror: "this.style.visibility='hidden'",
+        }));
+      });
+      if (sources.length > 3) {
+        citNode.appendChild(el('span', { class: 'pb-pd-icon-more', text: '+' + (sources.length - 3) }));
+      }
+    } else {
+      citNode = el('span', { class: 'pb-pd-dash', text: '–' });
     }
 
     function activate() {
       openRunModal(run, detail);
     }
 
-    return el('div', {
-      class: 'rounded-lg border border-gray-200 p-3 pb-run-click',
-      style: { background: mentioned ? 'var(--brand-soft, #fafafa)' : '#ffffff' },
+    return el('tr', {
+      class: 'pb-pd-row',
       role: 'button',
       tabindex: '0',
       title: 'Read the full response',
@@ -407,7 +756,163 @@
           activate();
         }
       },
-    }, children);
+    }, [
+      el('td', {}, [modelBadge(run.aiModel)]),
+      el('td', { style: { maxWidth: '300px' } }, [previewNode]),
+      el('td', {}, [sentBadge(run.sentiment || 'neutral')]),
+      el('td', {}, [visNode]),
+      el('td', {}, [posNode]),
+      el('td', {}, [mentNode]),
+      el('td', {}, [citNode]),
+    ]);
+  }
+
+  // sentiment pill (v4 .aim-sent-badge); small=true is the 10px header-bar variant
+  function sentBadge(sentiment, small) {
+    var cls = rmSentClass(sentiment);
+    return el('span', {
+      class: 'pb-pd-sent ' + cls + (small ? ' sm' : ''),
+      text: prettyIntent(sentiment || 'neutral'),
+    });
+  }
+
+  // ── page CSS injection ──────────────────────────────────────────────────────
+  // Page CSS extracted from ai-monitoring-dashboard-v4.html (.aim-pd-back
+  // 1083-1091, .aim-full-table 944-961, badges 963-988, .aim-sent-badge
+  // 1003-1010, plus the inline styles of aimOpenPromptDetail 7410-7494),
+  // scoped under .pb-pd-scope. Tokens come from the shared block in
+  // injectModalCSS (which also covers .pb-pd-scope).
+  function injectPageCSS() {
+    if (document.getElementById('pb-prompt-page-css')) return;
+    if (!document.head) return;
+    var s = document.createElement('style');
+    s.id = 'pb-prompt-page-css';
+    s.textContent = '\n' +
+      '.pb-pd-scope { font-family: var(--font); color: var(--text); }\n' +
+      '.pb-pd-scope *, .pb-pd-scope *::before, .pb-pd-scope *::after { box-sizing: border-box; }\n' +
+      '/* back button (v4 .aim-pd-back) */\n' +
+      '.pb-pd-scope .pb-pd-back {\n' +
+      '  display: flex; align-items: center; gap: 6px; padding: 6px 0 14px;\n' +
+      '  font-size: 13px; font-weight: 500; color: var(--text-muted);\n' +
+      '  cursor: pointer; background: none; border: none;\n' +
+      '  font-family: var(--font); transition: color .12s; text-decoration: none;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-back:hover { color: var(--accent); }\n' +
+      '.pb-pd-scope .pb-pd-back:hover svg { transform: translateX(-2px); }\n' +
+      '.pb-pd-scope .pb-pd-back svg { transition: transform .12s; }\n' +
+      '.pb-pd-scope .pb-pd-back-ico { display: inline-flex; align-items: center; }\n' +
+      '/* header card */\n' +
+      '.pb-pd-scope .pb-pd-card {\n' +
+      '  background: var(--surface); border: 1px solid var(--border);\n' +
+      '  border-radius: var(--radius-lg); box-shadow: var(--shadow);\n' +
+      '  padding: 16px; margin-bottom: 14px;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-prompt-text { font-size: 15px; font-weight: 600; line-height: 1.4; margin-bottom: 7px; color: var(--text); }\n' +
+      '.pb-pd-scope .pb-pd-badge-row { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }\n' +
+      '/* topic + intent badges (v4 .aim-topic-badge / .aim-intent-badge; the\n' +
+      '   #fff/#e5e7eb/#374151 chrome is verbatim v4 and has no token) */\n' +
+      '.pb-pd-scope .pb-pd-topic-badge, .pb-pd-scope .pb-pd-intent-badge {\n' +
+      '  display: inline-flex; align-items: center; gap: 4px;\n' +
+      '  font-size: 11px; font-weight: 600;\n' +
+      '  padding: 2px 7px; border-radius: 4px;\n' +
+      '  background: #fff; border: 1px solid #e5e7eb; color: #374151;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-topic-dot { font-size: 7px; line-height: 1; }\n' +
+      '.pb-pd-scope .pb-pd-intent-badge::before { content: \'\\25CF\'; font-size: 7px; line-height: 1; }\n' +
+      '.pb-pd-scope .pb-pd-intent-badge.informational::before { color: #2563eb; }\n' +
+      '.pb-pd-scope .pb-pd-intent-badge.commercial::before    { color: var(--accent); }\n' +
+      '.pb-pd-scope .pb-pd-intent-badge.transactional::before { color: #059669; }\n' +
+      '.pb-pd-scope .pb-pd-intent-badge.navigational::before  { color: #d97706; }\n' +
+      '.pb-pd-scope .pb-pd-caption { font-size: 11px; color: var(--text-faint); }\n' +
+      '/* stats row */\n' +
+      '.pb-pd-scope .pb-pd-stats { display: flex; align-items: flex-start; flex-wrap: wrap; row-gap: 10px; }\n' +
+      '.pb-pd-scope .pb-pd-stat-cluster { display: flex; gap: 20px; flex-shrink: 0; }\n' +
+      '.pb-pd-scope .pb-pd-stat-value { font-size: 20px; font-weight: 700; color: var(--text); }\n' +
+      '.pb-pd-scope .pb-pd-stat-value.accent { color: var(--accent); }\n' +
+      '.pb-pd-scope .pb-pd-stat-value.muted { color: var(--text-muted); }\n' +
+      '.pb-pd-scope .pb-pd-stat-label { font-size: 11px; color: var(--text-muted); }\n' +
+      '.pb-pd-scope .pb-pd-side-cluster { border-left: 1px solid var(--border); padding-left: 18px; margin-left: 18px; flex-shrink: 0; }\n' +
+      '.pb-pd-scope .pb-pd-side-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }\n' +
+      '.pb-pd-scope .pb-pd-icon-row { display: flex; align-items: center; gap: 4px; min-height: 26px; }\n' +
+      '.pb-pd-scope .pb-pd-icon-more { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-left: 2px; }\n' +
+      '.pb-pd-scope .pb-pd-icon-empty { font-size: 13px; color: var(--text-faint); }\n' +
+      '.pb-pd-scope .pb-pd-cite-icon { width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border-light); flex-shrink: 0; }\n' +
+      '.pb-pd-scope .pb-pd-cite-icon.sm { width: 16px; height: 16px; border-radius: 3px; border: none; }\n' +
+      '/* sentiment pill (v4 .aim-sent-badge) */\n' +
+      '.pb-pd-scope .pb-pd-sent {\n' +
+      '  font-size: 11px; font-weight: 600;\n' +
+      '  padding: 2px 8px; border-radius: 100px;\n' +
+      '  border: 1px solid; display: inline-block;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-sent.positive { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }\n' +
+      '.pb-pd-scope .pb-pd-sent.neutral  { background: var(--surface-alt); color: var(--text-muted); border-color: var(--border); }\n' +
+      '.pb-pd-scope .pb-pd-sent.negative { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }\n' +
+      '.pb-pd-scope .pb-pd-sent.sm { font-size: 10px; padding: 1px 7px; }\n' +
+      '/* section title */\n' +
+      '.pb-pd-scope .pb-pd-section-title { font-size: 14px; font-weight: 700; color: #111827; margin-bottom: 10px; }\n' +
+      '.pb-pd-scope .pb-pd-section-title span { font-size: 11px; font-weight: 400; color: var(--text-faint); }\n' +
+      '/* date sections */\n' +
+      '.pb-pd-scope .pb-pd-day-section { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; overflow: hidden; background: var(--surface); }\n' +
+      '.pb-pd-scope .pb-pd-day-head {\n' +
+      '  display: flex; align-items: center; justify-content: space-between;\n' +
+      '  padding: 10px 14px; background: var(--surface-alt); cursor: pointer;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-day-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\n' +
+      '.pb-pd-scope .pb-pd-cal-ico { display: inline-flex; align-items: center; color: var(--text); }\n' +
+      '.pb-pd-scope .pb-pd-day-date { font-size: 12px; font-weight: 700; color: var(--text); }\n' +
+      '.pb-pd-scope .pb-pd-latest-badge { font-size: 10px; font-weight: 600; background: var(--accent); color: #fff; padding: 1px 6px; border-radius: 4px; }\n' +
+      '.pb-pd-scope .pb-pd-day-faint { font-size: 11px; color: var(--text-faint); }\n' +
+      '.pb-pd-scope .pb-pd-day-divider { width: 1px; height: 12px; background: var(--border); display: inline-block; margin: 0 2px; }\n' +
+      '.pb-pd-scope .pb-pd-day-vis { font-size: 11px; font-weight: 600; color: var(--text-faint); }\n' +
+      '.pb-pd-scope .pb-pd-day-vis.on { color: var(--accent); }\n' +
+      '.pb-pd-scope .pb-pd-day-pos { font-size: 11px; color: var(--text-muted); }\n' +
+      '.pb-pd-scope .pb-pd-chev-btn {\n' +
+      '  background: none; border: none; cursor: pointer; padding: 2px;\n' +
+      '  display: flex; align-items: center; color: var(--text-muted); flex-shrink: 0;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-chevron { display: inline-flex; align-items: center; transition: transform .2s; }\n' +
+      '/* table (v4 .aim-full-table) */\n' +
+      '.pb-pd-scope .pb-pd-table-wrap { overflow-x: auto; }\n' +
+      '.pb-pd-scope .pb-pd-table { width: 100%; font-size: 12px; border-collapse: collapse; }\n' +
+      '.pb-pd-scope .pb-pd-table th {\n' +
+      '  font-size: 10px; font-weight: 600;\n' +
+      '  text-transform: uppercase; letter-spacing: .06em;\n' +
+      '  color: var(--text-faint); padding: 8px 18px;\n' +
+      '  border-bottom: 1px solid var(--border);\n' +
+      '  text-align: center; background: var(--surface-alt);\n' +
+      '  white-space: nowrap;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-table td {\n' +
+      '  padding: 10px 18px;\n' +
+      '  border-bottom: 1px solid var(--border-light);\n' +
+      '  vertical-align: middle; text-align: center;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-table th:first-child, .pb-pd-scope .pb-pd-table td:first-child { text-align: left; }\n' +
+      '.pb-pd-scope .pb-pd-table tr:last-child td { border-bottom: none; }\n' +
+      '.pb-pd-scope .pb-pd-table tbody tr:hover td { background: var(--surface-alt); }\n' +
+      '.pb-pd-scope .pb-pd-row { cursor: pointer; }\n' +
+      '.pb-pd-scope .pb-pd-row:focus-visible { outline: 2px solid var(--accent-30); outline-offset: -2px; }\n' +
+      '/* table cells */\n' +
+      '.pb-pd-scope .pb-pd-model-badge {\n' +
+      '  display: inline-flex; align-items: center; gap: 3px;\n' +
+      '  padding: 2px 6px; border-radius: 4px;\n' +
+      '  font-size: 10px; font-weight: 500;\n' +
+      '  background: transparent; color: var(--text-muted);\n' +
+      '  border: 1px solid var(--border); line-height: 1.5; white-space: nowrap;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-model-badge img { width: 11px; height: 11px; border-radius: 2px; flex-shrink: 0; object-fit: contain; }\n' +
+      '.pb-pd-scope .pb-pd-preview {\n' +
+      '  font-size: 11px; line-height: 1.5; color: var(--text-muted); margin: 0;\n' +
+      '  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;\n' +
+      '  text-align: left;\n' +
+      '}\n' +
+      '.pb-pd-scope .pb-pd-vis { font-weight: 600; font-size: 12px; color: var(--text-faint); }\n' +
+      '.pb-pd-scope .pb-pd-vis.on { color: var(--accent); }\n' +
+      '.pb-pd-scope .pb-pd-pos { font-size: 12px; font-weight: 600; color: var(--text); }\n' +
+      '.pb-pd-scope .pb-pd-dash { color: var(--text-faint); }\n' +
+      '.pb-pd-scope .pb-pd-cell-icons { display: flex; align-items: center; gap: 4px; justify-content: center; }\n' +
+      '.pb-pd-scope .pb-pd-nodata { font-size: 11px; color: var(--text-faint); padding: 10px 12px; }\n';
+    document.head.appendChild(s);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -474,13 +979,10 @@
   // v4 aimBrandIcon letter fallback (line 5898): deterministic palette hash.
   // brandMentions entries have no domain field, so we never guess one; the
   // letter avatar is the v4 fallback path for exactly this case.
-  var LETTER_PALETTE = ['#b352b3', '#10b981', '#2563eb', '#8b5cf6', '#64748b', '#06b6d4', '#f59e0b', '#f472b6', '#38bdf8', '#94a3b8'];
   function brandLetterIcon(name, sz) {
     var n = String(name || '?');
     var letter = n.charAt(0).toUpperCase();
-    var h = 0;
-    for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) & 0xffff;
-    var bg = LETTER_PALETTE[h % LETTER_PALETTE.length];
+    var bg = letterAvatarColor(n);
     var r = Math.round(sz * 0.22);
     var fs = Math.max(8, Math.round(sz * 0.46));
     return el('span', {
@@ -676,9 +1178,9 @@
   // Modal CSS extracted verbatim from ai-monitoring-dashboard-v4.html
   // (lines 1093-1202 + .aim-you-badge at 565), scoped under .pb-rm-scope so it
   // cannot leak into other views. The token block mirrors the v4 :root the
-  // same way views/todos.js injectTodosCSS() does. .pb-run-click (the
-  // clickable run rows in the history card) shares the token block because it
-  // lives outside the modal scope.
+  // same way views/todos.js injectTodosCSS() does. .pb-pd-scope (the page
+  // wrapper) shares the token block because the page lives outside the
+  // modal scope.
   function injectModalCSS() {
     if (document.getElementById('pb-prompt-modal-css')) return;
     if (!document.head) return;
@@ -686,7 +1188,7 @@
     s.id = 'pb-prompt-modal-css';
     s.textContent = '\n' +
       '/* === tokens (v4 :root) === */\n' +
-      '.pb-rm-scope, .pb-run-click {\n' +
+      '.pb-rm-scope, .pb-pd-scope {\n' +
       '  --bg:              #ffffff;\n' +
       '  --surface:         #ffffff;\n' +
       '  --surface-alt:     #fafafa;\n' +
@@ -705,10 +1207,6 @@
       '  --shadow:          0 1px 2px rgba(0,0,0,0.05);\n' +
       '  --font:            \'Inter\', ui-sans-serif, system-ui, sans-serif;\n' +
       '}\n' +
-      '/* clickable run rows in the history card */\n' +
-      '.pb-run-click { cursor: pointer; transition: border-color .12s, box-shadow .12s; }\n' +
-      '.pb-run-click:hover { border-color: var(--accent-30); box-shadow: var(--shadow); }\n' +
-      '.pb-run-click:focus-visible { outline: 2px solid var(--accent-30); outline-offset: 1px; }\n' +
       '/* === v4 response modal (lines 1093-1202) === */\n' +
       '.pb-rm-scope { font-family: var(--font); -webkit-font-smoothing: antialiased; }\n' +
       '.pb-rm-scope *, .pb-rm-scope *::before, .pb-rm-scope *::after { box-sizing: border-box; }\n' +
@@ -850,40 +1348,5 @@
     if (!i) return '';
     var s = String(i).toLowerCase();
     return s.charAt(0).toUpperCase() + s.slice(1);
-  }
-
-  function typeBadge(type) {
-    var t = (type || 'untracked').toLowerCase();
-    if (t === 'brand') return el('span', { class: 'pb-badge pb-badge-brand', text: 'Brand' });
-    if (t === 'competitor') return el('span', { class: 'pb-badge pb-badge-red', text: 'Competitor' });
-    return el('span', { class: 'pb-badge', text: 'Untracked' });
-  }
-
-  function sentimentBadge(sentiment) {
-    var s = String(sentiment).toLowerCase();
-    var cls = 'pb-badge';
-    if (s === 'positive') cls += ' pb-badge-green';
-    else if (s === 'negative') cls += ' pb-badge-red';
-    return el('span', { class: cls, text: prettyIntent(s) });
-  }
-
-  function trendBadge(trend) {
-    var t = trend || 'stable';
-    if (t === 'up') {
-      return el('span', { class: 'pb-badge pb-badge-green', style: { display: 'inline-flex', alignItems: 'center', gap: '3px' } }, [
-        el('i', { 'data-lucide': 'trending-up', style: { width: '13px', height: '13px' } }),
-        el('span', { text: 'up' }),
-      ]);
-    }
-    if (t === 'down') {
-      return el('span', { class: 'pb-badge pb-badge-red', style: { display: 'inline-flex', alignItems: 'center', gap: '3px' } }, [
-        el('i', { 'data-lucide': 'trending-down', style: { width: '13px', height: '13px' } }),
-        el('span', { text: 'down' }),
-      ]);
-    }
-    return el('span', { class: 'pb-badge', style: { display: 'inline-flex', alignItems: 'center', gap: '3px' } }, [
-      el('i', { 'data-lucide': 'minus', style: { width: '13px', height: '13px' } }),
-      el('span', { text: 'stable' }),
-    ]);
   }
 })();
