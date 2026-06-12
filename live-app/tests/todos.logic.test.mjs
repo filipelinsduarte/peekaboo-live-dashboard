@@ -253,5 +253,96 @@ test('expandTodo emits children with _groupLabel for multi-suggestion parents', 
   assert.deepEqual(out[2].signals, ['sig']);
 });
 
+// ── weeklyCacheState ─────────────────────────────────────────────────────────
+const WEEK_MS = 604800000; // 7 days
+const NOW = Date.UTC(2026, 5, 12, 12, 0, 0);
+function storedAt(ageMs) {
+  return { generatedAt: new Date(NOW - ageMs).toISOString(), todos: [] };
+}
+
+test('weeklyCacheState returns fresh for a set under 7 days old', () => {
+  assert.equal(L.weeklyCacheState(storedAt(0), NOW), 'fresh');
+  assert.equal(L.weeklyCacheState(storedAt(3 * 24 * 3600 * 1000), NOW), 'fresh');
+  assert.equal(L.weeklyCacheState(storedAt(WEEK_MS - 1), NOW), 'fresh');
+});
+
+test('weeklyCacheState returns expired for a set over 7 days old', () => {
+  assert.equal(L.weeklyCacheState(storedAt(WEEK_MS + 1), NOW), 'expired');
+  assert.equal(L.weeklyCacheState(storedAt(30 * 24 * 3600 * 1000), NOW), 'expired');
+});
+
+test('weeklyCacheState boundary: exactly 7 days old is expired', () => {
+  assert.equal(L.weeklyCacheState(storedAt(WEEK_MS), NOW), 'expired');
+});
+
+test('weeklyCacheState returns missing for null/undefined', () => {
+  assert.equal(L.weeklyCacheState(null, NOW), 'missing');
+  assert.equal(L.weeklyCacheState(undefined, NOW), 'missing');
+});
+
+test('weeklyCacheState returns missing for corrupt entries, never throws', () => {
+  assert.equal(L.weeklyCacheState('not an object', NOW), 'missing');
+  assert.equal(L.weeklyCacheState(42, NOW), 'missing');
+  assert.equal(L.weeklyCacheState([], NOW), 'missing');
+  assert.equal(L.weeklyCacheState({}, NOW), 'missing');
+  assert.equal(L.weeklyCacheState({ todos: [] }, NOW), 'missing', 'no generatedAt');
+  assert.equal(L.weeklyCacheState({ generatedAt: new Date(NOW).toISOString() }, NOW), 'missing', 'no todos array');
+  assert.equal(L.weeklyCacheState({ generatedAt: 'not-a-date', todos: [] }, NOW), 'missing', 'unparseable date');
+  assert.equal(L.weeklyCacheState({ generatedAt: new Date(NOW).toISOString(), todos: 'nope' }, NOW), 'missing', 'todos not an array');
+});
+
+// ── mergeNewTodos ────────────────────────────────────────────────────────────
+const mergeExisting = [
+  { id: 'td-a', recType: 'content', title: 'A' },
+  { id: 'td-b', recType: 'reddit', title: 'B' },
+];
+const mergeGenerated = [
+  { id: 'td-a', recType: 'content', title: 'A regenerated' },  // dup id -> skipped
+  { id: 'td-c', recType: 'content', title: 'C' },              // new, matching type
+  { id: 'td-d', recType: 'reddit', title: 'D' },               // new, wrong type
+  { id: 'td-e', recType: 'content', title: 'E' },              // new, matching type
+];
+
+test('mergeNewTodos adds only new todos of the requested type', () => {
+  const out = L.mergeNewTodos(mergeExisting, mergeGenerated, 'content');
+  assert.equal(out.addedCount, 2);
+  assert.equal(out.merged.length, 4);
+  const ids = out.merged.map((t) => t.id);
+  assert.deepEqual(ids, ['td-a', 'td-b', 'td-c', 'td-e']);
+  assert.ok(!ids.includes('td-d'), 'reddit todo not added on a content generation');
+});
+
+test('mergeNewTodos dedupes by id and keeps the existing version', () => {
+  const out = L.mergeNewTodos(mergeExisting, mergeGenerated, 'content');
+  const a = out.merged.find((t) => t.id === 'td-a');
+  assert.equal(a.title, 'A', 'existing todo wins over the regenerated duplicate');
+});
+
+test('mergeNewTodos zero-new case returns addedCount 0 and the same set', () => {
+  const out = L.mergeNewTodos(mergeExisting, [{ id: 'td-a', recType: 'content' }], 'content');
+  assert.equal(out.addedCount, 0);
+  assert.equal(out.merged.length, 2);
+  const out2 = L.mergeNewTodos(mergeExisting, [], 'content');
+  assert.equal(out2.addedCount, 0);
+  assert.equal(out2.merged.length, 2);
+});
+
+test('mergeNewTodos does not mutate its inputs', () => {
+  const existingCopy = JSON.stringify(mergeExisting);
+  const generatedCopy = JSON.stringify(mergeGenerated);
+  const out = L.mergeNewTodos(mergeExisting, mergeGenerated, 'content');
+  assert.equal(JSON.stringify(mergeExisting), existingCopy, 'existing untouched');
+  assert.equal(JSON.stringify(mergeGenerated), generatedCopy, 'generated untouched');
+  assert.notEqual(out.merged, mergeExisting, 'merged is a new array');
+});
+
+test('mergeNewTodos handles non-array and malformed inputs defensively', () => {
+  const out = L.mergeNewTodos(null, null, 'content');
+  assert.equal(out.addedCount, 0);
+  assert.equal(out.merged.length, 0);
+  const out2 = L.mergeNewTodos([], [{ recType: 'content' }, null], 'content');
+  assert.equal(out2.addedCount, 0, 'todos without an id are skipped');
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed > 0 ? 1 : 0);

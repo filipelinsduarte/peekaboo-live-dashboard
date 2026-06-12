@@ -328,3 +328,37 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 6. **Effort filter bug**: generated todos use the string `"Med effort"` but the Medium filter matches the substring `"medium"`, so the Medium effort filter currently returns nothing. Fix in production by making `effort` an enum (`low | medium | high`) and formatting the label in the UI.
 7. **Priority reassignments and triage state are not account-level.** Priority overrides are lost on reload; added/completed/archived/notes live in `localStorage` per browser. Production needs DB persistence keyed by brand + recommendation id (the deterministic ids make this safe).
 8. **Time range affects inputs only.** `time_range` is passed to the prompts call and used in a few signal labels, but the snapshot endpoint is range-less; a production recommendations endpoint should make the range explicit end to end.
+
+---
+
+## 10. Weekly Refresh Cycle & On-Demand Generation (added 2026-06-12)
+
+Two behaviors layered on top of the rule engine. Both are PoC implementations with explicit production paths.
+
+### Weekly refresh cycle
+
+The plan no longer regenerates on every page load. Cadence is weekly, per brand:
+
+- Storage: `localStorage` key `pb_td_weekly_<brandId>` holding `{ generatedAt: <ISO string>, todos: [...] }`.
+- On view load the stored entry is classified by the pure function `weeklyCacheState(stored, nowMs)` (exposed on `window.PBTodosLogic`, unit-tested): `'fresh'` (< 7 days = 604,800,000 ms), `'expired'` (>= 7 days, boundary inclusive), or `'missing'` (absent, unparseable, or structurally corrupt; `JSON.parse` failures and bad shapes all fall back to `'missing'`, never throw).
+- `fresh`: stored todos are used as-is. `expired` or `missing`: the two API endpoints are re-fetched, the rule engine re-runs, the cache is written with a new `generatedAt`, and (on `expired` only, not first-ever generation) the user sees the toast "Your action plan has been refreshed with this week's data".
+- The snapshot + prompts fetch still runs on every load regardless of cache state, because the detail panel's example URLs read the normalized snapshot. Only the todo *generation* is on the weekly cycle.
+- The existing stale-ID purge for the added/completed/archived sets runs against whichever todo set is active.
+- A caption under the page subtitle ("Updated <Mon DD> · refreshes weekly") is driven by `generatedAt`.
+- Brand switches are independent: each brand has its own key and its own 7-day window.
+
+**Production:** the generation timestamp should live server-side, not in `localStorage` (it is per-browser and clearable). Either a weekly cron that regenerates and stamps each brand's recommendation set, or an on-demand check in the recommendations endpoint (regenerate when `now - generatedAt >= 7 days`, else serve the stored set). The endpoint should return `generatedAt` so the client can render the caption.
+
+### On-demand "Generate New Recommendations" (type-scoped)
+
+An accent CTA in the table filter row opens a dropdown with the six user-facing categories (Content, Social Media, Reddit, YouTube, Backlinks, Crawlability, mapping to `recType` keys `content`, `social-media`, `reddit`, `youtube`, `backlinks`, `crawlability`). Selecting one:
+
+1. Re-fetches the snapshot + prompts endpoints.
+2. Re-runs the deterministic rule engine, filters the output to the selected `recType`.
+3. Merges via the pure function `mergeNewTodos(existing, generated, recType)` (exposed on `window.PBTodosLogic`, unit-tested): appends only todos whose `id` is not already present, returns `{merged, addedCount}`, mutates nothing. Because archived/completed todos remain in the existing set, their ids are never resurrected.
+4. Writes the merged set back into the weekly cache **without changing `generatedAt`**, so on-demand generation does not reset the weekly window.
+5. Toasts the result count, or a "no new recommendations right now" message when the engine produced nothing new for that type.
+
+**Honest limitation:** the engine is deterministic, so re-running it against unchanged data yields the same ids and the merge adds nothing. New recommendations only appear when the underlying API data has changed since the weekly set was generated (new citations, prompt movement, competitor shifts). In practice the button is most useful mid-week after new analysis runs. Note also that the engine currently emits no todos with `recType` `social-media`, `youtube`, or `crawlability` (no rules target them yet), so those options will always toast zero until rules or an LLM generator exist for them.
+
+**Production:** this is the natural seam for an LLM-backed generator. Route the selected category to a per-category generation prompt (with the same snapshot data as context), validate the response against the todo schema, and dedupe server-side against the stored set by id or semantic similarity. The deterministic engine can remain as the guaranteed-coverage baseline.

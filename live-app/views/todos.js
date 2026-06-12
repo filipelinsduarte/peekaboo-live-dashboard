@@ -310,6 +310,22 @@
 .pb-todos-scope tr.aim-td-row-done td:first-child { opacity: 1; }
 /* todo filter triggers — match toggle height */
 .pb-todos-scope #aim-td-list .ct-custom-trigger { height: 28px; font-size: 11.5px; padding: 0 9px; }
+/* Generate New Recommendations CTA — solid accent variant of the filter trigger.
+   The ID selector matches the specificity of the filter-trigger rule above and
+   wins by source order, so the shared trigger hover/open styles don't bleed in. */
+.pb-todos-scope #aim-td-list .aim-td-gen-btn {
+  width: auto; height: 28px; padding: 0 12px;
+  font-size: 11.5px; font-weight: 600;
+  color: #fff; background: var(--accent);
+  border: 1px solid var(--accent); border-radius: 7px;
+  display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap; cursor: pointer; font-family: var(--font);
+  transition: background .12s, border-color .12s;
+}
+.pb-todos-scope #aim-td-list .aim-td-gen-btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.pb-todos-scope #aim-td-list .ct-custom-select.open .aim-td-gen-btn { background: var(--accent-hover); border-color: var(--accent-hover); }
+.pb-todos-scope #aim-td-list .aim-td-gen-btn:disabled { opacity: .65; cursor: default; }
+.pb-todos-scope #aim-td-list .aim-td-gen-btn svg { flex-shrink: 0; }
 /* styled tooltip wrapper */
 .pb-todos-scope .aim-td-tip { position: relative; display: inline-flex; }
 .pb-todos-scope .aim-td-tip::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 5px); left: 50%; transform: translateX(-50%); background: #fff; border: 1px solid #e4e4e7; border-radius: 6px; padding: 4px 9px; font-size: 11px; font-weight: 400; color: #374151; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.1); z-index: 300; pointer-events: none; opacity: 0; transition: opacity .12s; }
@@ -389,12 +405,65 @@
   var _periodRange = '30d';
   var _snapNorm = null;            // normalized snapshot (source-file shape)
   var _aimExtUrlCache = null;
+  // weekly refresh cycle (Feature: pb_td_weekly_<brandId>)
+  var WEEK_MS = 604800000;         // 7 days in ms
+  var _lsWeekly = 'pb_td_weekly_default';
+  var _weeklyGeneratedAt = null;   // ISO string; drives the "Updated <date>" caption
+  // Generate New Recommendations button state + brand context for re-fetch
+  var _aimGenBusy = false;
+  var _aimBrandId = null;
+  var _aimBrandName = '';
+  var _aimBrandUrl = '';
 
   function _loadSet(key) {
     try { return new Set(JSON.parse(localStorage.getItem(key) || '[]')); } catch (e) { return new Set(); }
   }
   function _saveSet(key, set) {
     try { localStorage.setItem(key, JSON.stringify([...set])); } catch (e) { /* quota / private mode */ }
+  }
+
+  // ── Weekly cache: pure logic + storage helpers ─────────────────────────────
+  // Pure: classify a stored weekly cache entry. Defensive on purpose: any
+  // corrupt / partial / unparseable value falls back to 'missing', never throws.
+  function weeklyCacheState(stored, nowMs) {
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return 'missing';
+    if (!stored.generatedAt || !Array.isArray(stored.todos)) return 'missing';
+    var t = Date.parse(stored.generatedAt);
+    if (isNaN(t)) return 'missing';
+    var age = Number(nowMs) - t;
+    if (isNaN(age)) return 'missing';
+    return age < WEEK_MS ? 'fresh' : 'expired';
+  }
+
+  // Pure: merge newly generated todos of one recType into the existing set.
+  // Dedupes by id (archived/completed todos stay in the existing list, so
+  // their ids are never re-added). Does not mutate either input array.
+  function mergeNewTodos(existing, generated, recType) {
+    var merged = Array.isArray(existing) ? existing.slice() : [];
+    var seen = {};
+    merged.forEach(function (t) { if (t && t.id) seen[t.id] = true; });
+    var addedCount = 0;
+    (Array.isArray(generated) ? generated : []).forEach(function (t) {
+      if (!t || !t.id) return;
+      if (recType && t.recType !== recType) return;
+      if (seen[t.id]) return;
+      seen[t.id] = true;
+      merged.push(t);
+      addedCount++;
+    });
+    return { merged: merged, addedCount: addedCount };
+  }
+
+  function _loadWeeklyCache() {
+    var raw = null;
+    try { raw = localStorage.getItem(_lsWeekly); } catch (e) { return null; }
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+  function _saveWeeklyCache(todos, generatedAtIso) {
+    try {
+      localStorage.setItem(_lsWeekly, JSON.stringify({ generatedAt: generatedAtIso, todos: todos || [] }));
+    } catch (e) { /* quota / private mode */ }
   }
 
   // ── Small helpers (ported verbatim) ───────────────────────────────────────
@@ -2646,6 +2715,84 @@
     return todos;
   }
 
+  // ── Generate New Recommendations (on-demand, type-scoped) ──────────────────
+  function aimTdGenOpenSelect() {
+    if (_aimGenBusy) return;
+    openCustomSelect('aim-td-gen-sel');
+    var wrap = document.getElementById('aim-td-gen-sel');
+    if (!wrap || !wrap.classList.contains('open')) return;
+    var trigger = wrap.querySelector('.ct-custom-trigger');
+    var dd = wrap.querySelector('.ct-custom-dropdown');
+    if (!trigger || !dd) return;
+    // right-align the dropdown with the trigger so it doesn't overflow the card
+    var r = trigger.getBoundingClientRect();
+    var w = dd.offsetWidth || 160;
+    dd.style.left = Math.max(8, r.right - w) + 'px';
+  }
+
+  async function aimTdGenerateNew(recType) {
+    var sel = document.getElementById('aim-td-gen-sel');
+    if (sel) sel.classList.remove('open');
+    if (_aimGenBusy) return;
+    _aimGenBusy = true;
+    var btn = document.getElementById('aim-td-gen-btn');
+    var lbl = document.getElementById('aim-td-gen-label');
+    var origLabel = lbl ? lbl.textContent : '';
+    if (btn) btn.disabled = true;
+    if (lbl) lbl.textContent = 'Generating…';
+    var typeLabel = _aimTdTypeLabels[recType] || recType;
+    try {
+      // re-fetch live data (same shape as the view load fetch)
+      var snap = {};
+      var promptRows = [];
+      try {
+        var results = await Promise.all([
+          PB.api.snapshot(_aimBrandId).catch(function () { return null; }),
+          PB.api.prompts(_aimBrandId, { time_range: _periodRange, limit: 100 }).catch(function () { return null; })
+        ]);
+        snap = results[0] || {};
+        var envelope = results[1];
+        if (envelope) {
+          var arr = envelope.prompts || envelope.data || [];
+          if (Array.isArray(arr)) promptRows = arr;
+        }
+      } catch (e) { /* generator runs on whatever we got */ }
+
+      var norm = normalizeSnapshot(snap, promptRows, _aimBrandName, _aimBrandUrl);
+      var generated = aimGenerateTodos(norm);
+      var res = mergeNewTodos(_aimTodosData || [], generated, recType);
+      _aimTodosData = res.merged;
+      // persist into the weekly cache WITHOUT touching generatedAt, so the
+      // weekly refresh cycle stays stable
+      _saveWeeklyCache(_aimTodosData, _weeklyGeneratedAt);
+
+      if (res.addedCount > 0) {
+        aimShowToast(res.addedCount + ' new ' + typeLabel + ' recommendation' + (res.addedCount === 1 ? '' : 's') + ' added');
+      } else {
+        aimShowToast('No new ' + typeLabel + ' recommendations right now, they\'ll refresh automatically next week');
+      }
+      aimUpdateTodoTabCounts();
+      aimRenderTodosTable();
+    } catch (e) {
+      aimShowToast('Could not generate ' + typeLabel + ' recommendations right now');
+    } finally {
+      _aimGenBusy = false;
+      if (btn) btn.disabled = false;
+      if (lbl) lbl.textContent = origLabel || 'Generate New Recommendations';
+    }
+  }
+
+  // "Updated <Mon DD> · refreshes weekly" caption under the page subtitle
+  function aimRenderUpdatedCaption() {
+    var el = document.getElementById('aim-td-updated-caption');
+    if (!el) return;
+    if (!_weeklyGeneratedAt) { el.textContent = ''; return; }
+    var d = new Date(_weeklyGeneratedAt);
+    if (isNaN(d.getTime())) { el.textContent = ''; return; }
+    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    el.textContent = 'Updated ' + months[d.getMonth()] + ' ' + d.getDate() + ' · refreshes weekly';
+  }
+
   // ── Globals for the ported inline onclick="" handlers ──────────────────────
   // The HTML template and row/detail renderers are taken verbatim from the v4
   // file, which wires events through global function names. State stays inside
@@ -2672,7 +2819,9 @@
     aimTdBulkAction: aimTdBulkAction,
     aimTdToggleWhy: aimTdToggleWhy,
     aimTdSaveNotes: aimTdSaveNotes,
-    aimGoToPrompt: aimGoToPrompt
+    aimGoToPrompt: aimGoToPrompt,
+    aimTdGenOpenSelect: aimTdGenOpenSelect,
+    aimTdGenerateNew: aimTdGenerateNew
   };
   Object.keys(_todosGlobalHandlers).forEach(function (k) { window[k] = _todosGlobalHandlers[k]; });
 
@@ -2684,6 +2833,7 @@
         <div style="margin-bottom:14px;">
           <div style="font-size:20px;font-weight:700;color:var(--text);letter-spacing:-.4px;margin:0 0 4px;">Your AI Visibility Action Plan</div>
           <p style="font-size:12px;color:var(--text-muted);margin:0;">Data-driven actions built from your citation patterns, competitor gaps, and prompt performance.</p>
+          <p id="aim-td-updated-caption" style="font-size:12px;color:var(--text-faint);margin:3px 0 0;"></p>
         </div>
 
         <div class="card" style="overflow:hidden;">
@@ -2744,6 +2894,20 @@
                   <div class="ct-custom-option" onclick="aimSetTodoEffortFilter('low','Low Effort')">Low Effort</div>
                   <div class="ct-custom-option" onclick="aimSetTodoEffortFilter('med','Medium Effort')">Medium Effort</div>
                   <div class="ct-custom-option" onclick="aimSetTodoEffortFilter('high','High Effort')">High Effort</div>
+                </div>
+              </div>
+              <div class="ct-custom-select" id="aim-td-gen-sel" style="min-width:0;">
+                <button class="ct-custom-trigger aim-td-gen-btn" id="aim-td-gen-btn" onclick="aimTdGenOpenSelect()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+                  <span id="aim-td-gen-label">Generate New Recommendations</span>
+                </button>
+                <div class="ct-custom-dropdown">
+                  <div class="ct-custom-option" onclick="aimTdGenerateNew('content')">Content</div>
+                  <div class="ct-custom-option" onclick="aimTdGenerateNew('social-media')">Social Media</div>
+                  <div class="ct-custom-option" onclick="aimTdGenerateNew('reddit')">Reddit</div>
+                  <div class="ct-custom-option" onclick="aimTdGenerateNew('youtube')">YouTube</div>
+                  <div class="ct-custom-option" onclick="aimTdGenerateNew('backlinks')">Backlinks</div>
+                  <div class="ct-custom-option" onclick="aimTdGenerateNew('crawlability')">Crawlability</div>
                 </div>
               </div>
             </div>
@@ -2846,6 +3010,11 @@
     _lsCompleted = 'pb_td_completed_' + brandId;
     _lsArchived = 'pb_td_archived_' + brandId;
     _lsNotesPrefix = 'pb_td_notes_' + brandId + '_';
+    _lsWeekly = 'pb_td_weekly_' + brandId;
+    _weeklyGeneratedAt = null;
+    _aimGenBusy = false;
+    _aimBrandId = ctx.brandId;
+    _aimBrandName = ctx.brandName || '';
     _aimTodosAdded = _loadSet(_lsAdded);
     _aimTodosCompleted = _loadSet(_lsCompleted);
     _aimTodosArchived = _loadSet(_lsArchived);
@@ -2874,9 +3043,29 @@
       var b = (PB.state.brands || []).find(function (x) { return x.id === ctx.brandId; });
       if (b && b.url) brandUrl = b.url;
     } catch (e) { /* noop */ }
+    _aimBrandUrl = brandUrl;
 
+    // _snapNorm is always built from the live fetch: the detail panel's
+    // example URLs and signal favicons read it even when todos come from cache.
     _snapNorm = normalizeSnapshot(snap, promptRows, ctx.brandName, brandUrl);
-    _aimTodosData = aimGenerateTodos(_snapNorm);
+
+    // Weekly refresh cycle: reuse the stored set if it's under 7 days old;
+    // otherwise regenerate from the live data and start a new weekly window.
+    var storedWeekly = _loadWeeklyCache();
+    var cacheState = weeklyCacheState(storedWeekly, Date.now());
+    if (cacheState === 'fresh') {
+      _aimTodosData = storedWeekly.todos;
+      _weeklyGeneratedAt = storedWeekly.generatedAt;
+    } else {
+      _aimTodosData = aimGenerateTodos(_snapNorm);
+      _weeklyGeneratedAt = new Date().toISOString();
+      _saveWeeklyCache(_aimTodosData, _weeklyGeneratedAt);
+      // only announce a refresh when an expired set was replaced, not on the
+      // first-ever generation for this brand
+      if (cacheState === 'expired') {
+        aimShowToast('Your action plan has been refreshed with this week\'s data');
+      }
+    }
 
     // purge stale IDs from localStorage that no longer exist in the current list
     var validIds = new Set(_aimTodosData.map(function (t) { return t.id; }));
@@ -2890,6 +3079,7 @@
     // paint
     root.innerHTML = TODOS_TEMPLATE;
     aimCloseTodoDetail();
+    aimRenderUpdatedCaption();
     aimUpdateTodoTabCounts();
     aimRenderTodosTable();
     aimUpdateTodosFloatingBar();
@@ -2902,6 +3092,8 @@
     splitMentions: splitMentions,
     normalizeSnapshot: normalizeSnapshot,
     expandTodo: _aimExpandTodo,
+    weeklyCacheState: weeklyCacheState,
+    mergeNewTodos: mergeNewTodos,
     generateTodos: function (snap, promptRows, brandName, brandUrl) {
       return aimGenerateTodos(normalizeSnapshot(snap, promptRows, brandName, brandUrl));
     }
