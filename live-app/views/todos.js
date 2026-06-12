@@ -1861,7 +1861,7 @@
           pageType: 'off-page',
           recType: 'backlinks',
           aiTargets: provsCitingDomain.length ? provsCitingDomain : activeProviders(),
-          title: 'Get listed on ' + tdSrc.domain + ': ' + tdShare + '% of AI mentions come from it',
+          title: 'Pitch ' + tdSrc.domain + ' for a listing: it is the site AI quotes most in your category',
           signals: [
             tdSrc.domain + ' accounts for ' + tdShare + '% of all AI citations in your space',
             'It appears in ' + tdSrc.citation_count + ' monitored AI responses across all models',
@@ -1915,7 +1915,7 @@
           pageType: 'on-page',
           recType: 'content',
           aiTargets: [weakest.key],
-          title: 'Catch up on ' + weakest.label + ': ' + weakest.vis.toFixed(1) + '% there vs ' + strongest.vis.toFixed(1) + '% on ' + strongest.label,
+          title: 'Get cited by ' + weakest.label + '\'s go-to sources: pitch ' + (weakSrcs.length ? weakSrcs.slice(0, 2).join(' and ') + ' first' : 'the sites it quotes most in your category'),
           signals: [
             weakest.label + ': ' + weakest.vis.toFixed(1) + '% visibility (your lowest-performing AI model)',
             strongest.label + ' leads at ' + strongest.vis.toFixed(1) + '%, a ' + modGap + '-point model gap',
@@ -1958,7 +1958,7 @@
           pageType: 'off-page',
           recType: 'backlinks',
           aiTargets: activeProviders(),
-          title: 'Get quoted on more sites: 3 sites drive ' + top3Share + '% of your AI mentions',
+          title: (topSources[4] ? 'Pitch guest posts to ' + topSources[3].domain + ' and ' + topSources[4].domain : 'Pitch a guest post to ' + topSources[3].domain) + ' to spread your AI mentions beyond ' + topSources[0].domain,
           signals: [
             topSources[0].domain + ', ' + topSources[1].domain + ', and ' + topSources[2].domain + ' account for ' + top3Share + '% of citations',
             'Over-concentration means a single domain change can drop your visibility sharply',
@@ -2024,7 +2024,7 @@
           pageType: 'on-page',
           recType: 'content',
           aiTargets: activeProviders(),
-          title: 'Cover “' + weakTopic.topic + '” properly: you show up in just ' + weakTopic.avgVis.toFixed(1) + '% of those questions',
+          title: 'Build a “' + weakTopic.topic + '” content cluster: one pillar page plus 3 supporting articles',
           signals: [
             '”' + weakTopic.topic + '” has ' + weakTopic.count + ' tracked prompts averaging ' + weakTopic.avgVis.toFixed(1) + '% visibility',
             'Your overall average is ' + overallVis.toFixed(1) + '%. This cluster is ' + Math.round(overallVis - weakTopic.avgVis) + ' points below that.',
@@ -2076,7 +2076,7 @@
         pageType: 'on-page',
         recType: 'content',
         aiTargets: lscTargProvs,
-        title: 'Publish a “' + lowSentComp.name + ' alternatives” page: only ' + lowSentComp.sentiment + '% of their mentions are positive',
+        title: 'Publish a “' + lowSentComp.name + ' alternatives” page targeting their unhappy users',
         signals: [
           lowSentComp.name + ' has ' + lowSentComp.visibility.toFixed(1) + '% visibility but only ' + lowSentComp.sentiment + '% positive sentiment',
           'High visibility with mixed sentiment: AI mentions them but often with caveats',
@@ -2092,7 +2092,7 @@
         ],
         suggestions: [
           {
-            title: 'Build a “' + brand + ' vs ' + lowSentComp.name + '” page with pricing and features',
+            title: 'Build a “' + brand + ' vs ' + lowSentComp.name + '” page with a feature matrix and pricing comparison',
             steps: [
               'Map ' + lowSentComp.name + '\'s pricing tiers and feature set from their public website and G2 profile',
               'Build a side-by-side comparison table with ' + brand + ' and ' + lowSentComp.name + ' as columns, using your strongest differentiation points as rows',
@@ -2106,7 +2106,7 @@
             ]
           },
           {
-            title: 'Join the Reddit threads where people complain about ' + lowSentComp.name,
+            title: 'Reply in the Reddit threads where people complain about ' + lowSentComp.name + ' and recommend ' + brand,
             steps: [
               'Search Reddit for “' + lowSentComp.name + ' problem”, “' + lowSentComp.name + ' alternative”, and “' + lowSentComp.name + ' cancelled” threads',
               'Read each thread carefully before engaging: respond only where ' + brand + ' is a genuine fit for the problem described',
@@ -2144,7 +2144,7 @@
           pageType: 'on-page',
           recType: 'content',
           aiTargets: activeProviders(),
-          title: 'Win the buying questions: you show up in just ' + commAvg.toFixed(1) + '% of them',
+          title: 'Publish a pricing and comparison page for the ' + commercialPrompts.length + ' buying questions you barely show up in',
           signals: [
             commercialPrompts.length + ' commercial-intent prompts averaging ' + commAvg.toFixed(1) + '% visibility',
             'These are high-converting queries: buyers comparing options and close to a decision',
@@ -2234,7 +2234,7 @@
         pageType: 'off-page',
         recType: 'reddit',
         aiTargets: redditProviders,
-        title: 'Get ' + brand + ' recommended on Reddit: AI quotes it in ' + redditSrc.citation_count + ' answers',
+        title: 'Get ' + brand + ' recommended in the Reddit threads AI already quotes',
         signals: [
           'reddit.com appears in ' + redditSrc.citation_count + ' monitored AI responses in your space',
           'Reddit threads are heavily weighted by ChatGPT, Gemini, and Perplexity for product recommendations',
@@ -2411,7 +2411,7 @@
         pageType: 'off-page',
         recType: 'social-media',
         aiTargets: socProviders,
-        title: 'Start posting on ' + socTop.label + ': AI quotes it in your category',
+        title: 'Start a weekly posting cadence on ' + socTop.label + ': AI already quotes it in your category',
         signals: [
           socTop.label + ' appears in ' + socTop.citation_count + ' monitored AI responses across your tracked prompts',
           'Social platforms account for ' + socStats.total + ' AI citations combined (' + socShare + '% of all citations in your space)',
@@ -2455,7 +2455,7 @@
         pageType: 'on-page',
         recType: 'content',
         aiTargets: activeProviders(),
-        title: 'Change how AI talks about ' + brand + ': only ' + Math.round(avgBrandSent) + '% of mentions are positive',
+        title: 'Run a 30-day reputation push for ' + brand + ': 20 new reviews and 3 customer stories',
         signals: [
           brand + '\'s average AI sentiment is ' + Math.round(avgBrandSent) + '%, below the neutral 60% threshold',
           'AI pulls sentiment signals from reviews, community posts, and comparison content it has indexed',
@@ -2476,7 +2476,7 @@
         steps: [],
         suggestions: [
           {
-            title: 'Collect 20 new G2 and Trustpilot reviews this month',
+            title: 'Run a G2 and Trustpilot review campaign: target 20+ new verified reviews in the next 30 days',
             steps: [
               'Export your current customer list and identify your 50 most active or successful users to contact first',
               'Send a personal email asking for an honest review, linking directly to your G2 and Trustpilot profile pages',
@@ -2490,7 +2490,7 @@
             ]
           },
           {
-            title: 'Publish 3 to 5 customer stories with real names and numbers',
+            title: 'Create a case studies page with 3 to 5 customer stories, each with named customers and metrics',
             steps: [
               'Identify 3-5 customers who have achieved measurable results (time saved, revenue, cost reduction) with ' + brand,
               'Interview each customer and capture specific metrics, before/after comparisons, and a named quote',
@@ -2504,7 +2504,7 @@
             ]
           },
           {
-            title: 'Answer your most common criticisms head on in blog posts',
+            title: 'Write blog posts answering the top criticism angles found in Reddit and reviews',
             steps: [
               'Search Reddit, G2, Trustpilot, and Capterra for the 5 most common criticisms or objections about ' + brand,
               'Write a candid, direct blog post for each objection, addressing it head-on with evidence or context',
@@ -2518,7 +2518,7 @@
             ]
           },
           {
-            title: 'Pitch your founder story to a site AI already quotes',
+            title: 'Pitch your founder story to a media outlet AI already quotes',
             steps: [
               'Identify 3 media outlets in Sources view that already generate AI citations in your space',
               'Draft a founder story angle: the specific problem that led to ' + brand + ', told with concrete details and data',
@@ -2532,7 +2532,7 @@
             ]
           },
           {
-            title: 'Build a “Why teams switch to ' + brand + '” page',
+            title: 'Build a “Why teams switch to ' + brand + '” page with before/after comparisons and direct user quotes',
             steps: [
               'Survey or interview 10 customers who switched from a competitor and ask them to describe the specific moment they decided to switch',
               'Structure the page around the 3-5 most common switching reasons, each with a named user quote and metric',
@@ -2573,7 +2573,7 @@
         pageType: 'on-page',
         recType: 'content',
         aiTargets: activeProviders(),
-        title: 'Get ' + brand + ' named earlier: you average position ' + snapAvgPos.toFixed(1) + ' in AI answers',
+        title: 'Get ' + brand + ' listed first on the comparison pages AI copies its ranking from',
         signals: [
           brand + ' appears at position ' + snapAvgPos.toFixed(1) + ' on average. Brands named first get significantly higher click intent.',
           'Position is set by how listicle and comparison pages order tools. Content strategy can directly move this.',
@@ -2666,7 +2666,7 @@
           pageType: 'on-page',
           recType: 'content',
           aiTargets: providersWhereCompVisible(sec.name).length ? providersWhereCompVisible(sec.name) : activeProviders(),
-          title: 'Close the gap with ' + sec.name + ': ' + sec.visibility.toFixed(1) + '% visibility vs your ' + overallVis.toFixed(1) + '%',
+          title: 'Run a 60-day push to catch ' + sec.name + ': comparison page, Reddit replies, and roundup placements',
           signals: [
             sec.name + ' appears in ' + (sec.mention_count || Math.round(sec.visibility * totalRuns / 100)) + ' AI responses across your tracked prompts',
             sec.name + ' leads ' + brand + ' by ' + secGap + ' visibility points',
@@ -2689,7 +2689,7 @@
           ],
           suggestions: [
             {
-              title: 'Publish a “' + brand + ' vs ' + sec.name + '” comparison page',
+              title: 'Publish a “' + brand + ' vs ' + sec.name + '” comparison page with a feature matrix and pricing',
               steps: [
                 'Research ' + sec.name + '\'s public pricing, features, and differentiators from their website, G2, and Trustpilot',
                 'Build a feature matrix table with ' + brand + ' and ' + sec.name + ' as columns, focusing on categories where ' + brand + ' wins clearly',
@@ -2703,7 +2703,7 @@
               ]
             },
             {
-              title: 'Join the Reddit threads comparing ' + sec.name + ' with alternatives',
+              title: 'Reply in the Reddit threads comparing ' + sec.name + ' with alternatives',
               steps: [
                 'Search Reddit for "' + sec.name + ' alternative", "vs ' + sec.name + '", and "' + sec.name + ' worth it" threads',
                 'Read at least 10 threads before engaging: respond only where ' + brand + ' is a genuine fit for the problem described',
@@ -2769,7 +2769,7 @@
         pageType: 'on-page',
         recType: 'technical-seo',
         aiTargets: activeProviders(),
-        title: 'Add FAQ markup so AI can quote your key pages',
+        title: 'Add FAQ markup to the 10 pages you most want AI to quote',
         signals: [
           questionPrompts.length + ' of your tracked prompts are phrased as direct questions, exactly what FAQPage schema is built to answer',
           'Structured data makes content machine-readable: AI extracts answers without interpreting prose',
@@ -2822,7 +2822,7 @@
         pageType: 'on-page',
         recType: 'technical-seo',
         aiTargets: ['googleaio', 'googleaimode'].filter(function (k) { return latByProv[k]; }),
-        title: 'Show up in Google AI answers: ' + (googleLowVis || 0).toFixed(1) + '% there vs ' + (chatgptVis2 || 0).toFixed(1) + '% on ChatGPT',
+        title: 'Get into Google\'s AI answers: add FAQ markup to the pages that already rank',
         signals: [
           'Google AI Overview: ' + (googleAioVis !== null ? googleAioVis.toFixed(1) + '%' : 'n/a') + ' visibility',
           'Google AI Mode: ' + (googleAiModeVis !== null ? googleAiModeVis.toFixed(1) + '%' : 'n/a') + ' visibility',
@@ -2836,7 +2836,7 @@
           }) },
           null
         ],
-        reasoning: 'Google\'s AI answers pull from pages that already rank well in normal Google search, so classic SEO matters more here than on ChatGPT. ' + brand + ' is far behind on Google AI compared to your other models. The fix is getting your key pages ranking for the target questions and adding FAQ markup so Google can lift the answer straight off the page.',
+        reasoning: 'Google\'s AI answers pull from pages that already rank well in normal Google search, so classic SEO matters more here than on ChatGPT. ' + brand + ' sits at ' + (googleLowVis || 0).toFixed(1) + '% visibility on Google AI vs ' + (chatgptVis2 || 0).toFixed(1) + '% on ChatGPT. The fix is getting your key pages ranking for the target questions and adding FAQ markup so Google can lift the answer straight off the page.',
         steps: [
           'Add FAQPage schema to pages where ' + brand + ' already ranks organically, directly answering the tracked prompt text',
           'Ensure ' + brand + '\'s site passes Core Web Vitals and has no crawl or mobile usability issues',
@@ -2895,7 +2895,7 @@
         pageType: 'on-page',
         recType: 'content',
         aiTargets: activeProviders(),
-        title: 'Publish your own data study: AI has to quote original numbers',
+        title: 'Publish a “State of [category]” data study: AI has to quote original numbers',
         signals: [
           'Original data and benchmark reports are cited as primary sources, not alongside 20 others',
           'AI cannot paraphrase proprietary data, so it must cite the source directly every time',
@@ -2953,7 +2953,7 @@
         pageType: 'off-page',
         recType: 'backlinks',
         aiTargets: activeProviders(),
-        title: 'Get ' + brand + ' covered on ' + newsDomainsCited[0].domain + ': AI already quotes it',
+        title: 'Pitch a story to ' + newsDomainsCited[0].domain + ': AI already quotes it in your category',
         signals: [
           newsDomainsCited.length + ' tech media domain' + (newsDomainsCited.length > 1 ? 's are' : ' is') + ' already generating AI citations in your category',
           newsDomainsCited[0].domain + ' appears in ' + newsDomainsCited[0].citation_count + ' AI responses across your tracked prompts',
@@ -3001,7 +3001,7 @@
         pageType: 'on-page',
         recType: 'crawlability',
         aiTargets: activeProviders(),
-        title: 'Let AI crawlers read ' + crawlBrandDom,
+        title: 'Open ' + crawlBrandDom + ' to AI crawlers: allow GPTBot and PerplexityBot in robots.txt and add llms.txt',
         signals: [
           'AI models cite ' + topSources.length + ' different domains in your category but never ' + crawlBrandDom,
           'Top cited domains right now: ' + crawlTop3.join(', '),

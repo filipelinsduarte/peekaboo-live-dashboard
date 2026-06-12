@@ -176,7 +176,8 @@ test('generateTodos top-domain todo computes the citation share and skips brand/
   assert.ok(topDomain, 'td-top-domain should exist (g2.com has 40 >= 5 citations)');
   // total citations = 30+40+10+6 = 86; g2 share = round(40/86*100) = 47
   assert.ok(topDomain.title.includes('g2.com'), 'targets g2.com, not acme.com (brand) or reddit.com (social)');
-  assert.ok(topDomain.title.includes('47%'), 'share math: round(40/86*100) = 47, got: ' + topDomain.title);
+  assert.ok(/^Pitch /.test(topDomain.title), 'title leads with the action, got: ' + topDomain.title);
+  assert.ok(topDomain.signals[0].includes('47%'), 'share math moved to signals: round(40/86*100) = 47, got: ' + topDomain.signals[0]);
 });
 
 test('generateTodos emits the diversify todo when top-3 share > 50%', () => {
@@ -184,7 +185,9 @@ test('generateTodos emits the diversify todo when top-3 share > 50%', () => {
   const div = todos.find((t) => t.id === 'td-diversify');
   // top3 = 40+30+10 = 80 of 86 = 93%
   assert.ok(div, 'td-diversify should exist');
-  assert.ok(div.title.includes('93%'), 'top3 share math: round(80/86*100) = 93, got: ' + div.title);
+  assert.ok(div.title.includes('blog.example.com'), 'title pitches the next-tier domain (#4), got: ' + div.title);
+  assert.ok(div.title.includes('g2.com'), 'title names the domain the mentions are concentrated on, got: ' + div.title);
+  assert.ok(div.signals[0].includes('93%'), 'top3 share math moved to signals: round(80/86*100) = 93, got: ' + div.signals[0]);
 });
 
 test('generateTodos emits the Reddit todo when reddit.com has > 3 citations', () => {
@@ -192,7 +195,8 @@ test('generateTodos emits the Reddit todo when reddit.com has > 3 citations', ()
   const reddit = todos.find((t) => t.id === 'td-reddit');
   assert.ok(reddit, 'td-reddit should exist (10 reddit citations)');
   assert.equal(reddit.recType, 'reddit');
-  assert.ok(reddit.title.includes('10 answers'), 'carries the citation count, got: ' + reddit.title);
+  assert.ok(reddit.title.includes('Reddit threads AI already quotes'), 'title names the tactic, got: ' + reddit.title);
+  assert.ok(reddit.signals[0].includes('10 monitored AI responses'), 'citation count moved to signals, got: ' + reddit.signals[0]);
 });
 
 test('generateTodos emits the schema todo when 2+ zero-visibility prompts', () => {
@@ -707,7 +711,9 @@ test('td-model-gap fires when the strongest-weakest model gap exceeds 3 points',
   assert.ok(gap, 'td-model-gap should exist (20 vs 5 = 15-point gap)');
   assert.deepEqual(Array.from(gap.aiTargets), ['gemini'], 'targets the weakest model');
   assert.ok(gap.title.includes('Gemini'), 'title names the weakest model, got: ' + gap.title);
-  assert.ok(gap.title.includes('5.0%') && gap.title.includes('20.0%'), 'title carries both numbers, got: ' + gap.title);
+  assert.ok(gap.title.includes('capterra.com'), 'title pitches the sites the weak model quotes, got: ' + gap.title);
+  assert.ok(gap.signals[0].includes('5.0%'), 'weakest visibility moved to signals, got: ' + gap.signals[0]);
+  assert.ok(gap.signals[1].includes('20.0%'), 'strongest visibility moved to signals, got: ' + gap.signals[1]);
 });
 
 test('td-model-gap does not fire at a gap of 3 points or less, or with one model', () => {
@@ -732,7 +738,8 @@ test('td-brand-sentiment fires below 58% average positive sentiment', () => {
   // the 5 suggestion children are emitted, grouped under td-brand-sentiment.
   const kids = todos.filter((t) => t._groupId === 'td-brand-sentiment');
   assert.equal(kids.length, 5, '5 sentiment-fix children emitted');
-  assert.ok(kids[0]._groupLabel.includes('53%'), 'group label carries the rounded average, got: ' + kids[0]._groupLabel);
+  assert.ok(kids[0]._groupLabel.includes('reputation push'), 'group label carries the campaign framing, got: ' + kids[0]._groupLabel);
+  assert.ok(kids[0].reasoning.includes('53%'), 'inherited reasoning carries the rounded average, got: ' + kids[0].reasoning);
   assert.ok(!todos.find((t) => t.id === 'td-brand-sentiment'), 'parent without steps is not emitted as a row');
 });
 
@@ -751,7 +758,7 @@ test('td-google-ai fires when Google AI visibility is under 55% of ChatGPT', () 
   }), [], 'Acme', 'https://acme.com');
   const g = todos.find((t) => t.id === 'td-google-ai');
   assert.ok(g, 'td-google-ai should exist (4 < 20 * 0.55)');
-  assert.ok(g.title.includes('4.0%') && g.title.includes('20.0%'), 'title carries both numbers, got: ' + g.title);
+  assert.ok(g.reasoning.includes('4.0%') && g.reasoning.includes('20.0%'), 'reasoning carries both numbers, got: ' + g.reasoning);
   assert.deepEqual(Array.from(g.aiTargets), ['googleaio'], 'targets the Google AI surface with data');
   const kids = todos.filter((t) => t._groupId === 'td-google-ai');
   assert.equal(kids.length, 2, 'backlinks + best-guide children emitted');
@@ -765,7 +772,7 @@ test('td-google-ai uses the weaker of AIO and AI Mode when both are present', ()
   }), [], 'Acme', 'https://acme.com');
   const g = todos.find((t) => t.id === 'td-google-ai');
   assert.ok(g, 'min(18, 3) = 3 < 11 -> fires');
-  assert.ok(g.title.includes('3.0%'), 'title uses the weaker Google surface, got: ' + g.title);
+  assert.ok(g.reasoning.includes('3.0%'), 'reasoning uses the weaker Google surface, got: ' + g.reasoning);
 });
 
 test('td-google-ai does not fire when Google AI holds up or ChatGPT is at zero', () => {
