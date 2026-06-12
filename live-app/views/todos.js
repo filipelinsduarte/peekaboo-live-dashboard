@@ -409,7 +409,9 @@
   var WEEK_MS = 604800000;         // 7 days in ms
   // Bump when rule copy or generation logic changes: stale caches from older
   // versions are discarded so users never see outdated titles for up to 7 days.
-  var WEEKLY_CACHE_VERSION = 2;
+  // v3: generation now bakes URL-level citation data (sourceUrls) into the
+  // cache payload, sampled from the prompt-detail endpoints.
+  var WEEKLY_CACHE_VERSION = 3;
   var _lsWeekly = 'pb_td_weekly_default';
   var _weeklyGeneratedAt = null;   // ISO string; drives the "Updated <date>" caption
   // Generate New Recommendations button state + brand context for re-fetch
@@ -464,9 +466,12 @@
     if (!raw) return null;
     try { return JSON.parse(raw); } catch (e) { return null; }
   }
-  function _saveWeeklyCache(todos, generatedAtIso) {
+  // sourceUrls: the URL-level citation list (aggregateSourceUrls output) is
+  // baked into the payload so cache-fresh loads restore it into _snapNorm
+  // without re-spending the prompt-detail API calls.
+  function _saveWeeklyCache(todos, generatedAtIso, sourceUrls) {
     try {
-      localStorage.setItem(_lsWeekly, JSON.stringify({ v: WEEKLY_CACHE_VERSION, generatedAt: generatedAtIso, todos: todos || [] }));
+      localStorage.setItem(_lsWeekly, JSON.stringify({ v: WEEKLY_CACHE_VERSION, generatedAt: generatedAtIso, todos: todos || [], sourceUrls: sourceUrls || [] }));
     } catch (e) { /* quota / private mode */ }
   }
 
@@ -969,13 +974,28 @@
   }
 
   // ── Cited URL corpus ────────────────────────────────────────────────────────
-  // The v4 source builds URL-level entries from top_source_urls +
-  // prompt_response_history. The live snapshot only exposes domain-level
-  // sources, so each domain becomes one entry (same as the source file's
-  // synthetic "domain:" entries when source_objects are absent).
+  // Preferred source: snap.top_source_urls, the real URL-level citation list
+  // aggregated from the prompt-detail endpoints (aggregateSourceUrls). Each
+  // entry carries the exact url the AI cited, the page title as label, and a
+  // per-URL citation count. Fallback when that list is empty (e.g. all
+  // prompt-detail calls failed): one synthetic entry per domain from the
+  // snapshot sources, same as before.
   function _aimGetAllUrls() {
     if (_aimExtUrlCache) return _aimExtUrlCache;
     var snap = _snapNorm || {};
+    var urlLevel = (snap.top_source_urls || []).filter(function (u) { return u && u.url; });
+    if (urlLevel.length) {
+      _aimExtUrlCache = urlLevel.map(function (u) {
+        return {
+          url:            u.url,
+          domain:         u.domain || cleanDomain(u.url),
+          label:          u.label || u.url,
+          citation_count: u.citation_count || 0,
+          by_provider:    u.by_provider || {}
+        };
+      });
+      return _aimExtUrlCache;
+    }
     _aimExtUrlCache = (snap.top_sources || []).map(function (s) {
       return {
         url:            s.domain,
@@ -986,6 +1006,16 @@
       };
     });
     return _aimExtUrlCache;
+  }
+
+  // True when domain equals target or is a subdomain of it (www. ignored on
+  // both sides). Used to filter URL-level entries per rule: real cited URLs
+  // live on subdomains like uk.trustpilot.com or forums.example.com.
+  function _aimDomainMatch(domain, target) {
+    var d = String(domain || '').replace(/^www\./, '').toLowerCase();
+    var t = String(target || '').replace(/^www\./, '').toLowerCase();
+    if (!d || !t) return false;
+    return d === t || d.slice(-(t.length + 1)) === '.' + t;
   }
 
   // ── Examples per strategy (ported; competitor/brand exclusions come from
@@ -1004,7 +1034,7 @@
         if (results.length < max && !results.some(function (r) { return r.url === u.url; })) results.push(u);
       });
     }
-    function nonReddit(u) { return u.domain !== 'reddit.com' && u.domain !== 'www.reddit.com'; }
+    function nonReddit(u) { return !_aimDomainMatch(u.domain, 'reddit.com'); }
     function buildExclusionSet() {
       var excl = new Set(['reddit.com', 'www.reddit.com']);
       (snap.competitor_entities || []).forEach(function (c) { if (c.domain) { excl.add(c.domain); excl.add('www.' + c.domain); } });
@@ -1015,15 +1045,15 @@
     // ── Reddit todo: actual Reddit threads being cited ───────────────
     if (id === 'td-reddit') {
       return allUrls.filter(function (u) {
-        return u.domain === 'reddit.com' || u.domain === 'www.reddit.com';
+        return _aimDomainMatch(u.domain, 'reddit.com');
       }).slice(0, 5);
     }
 
-    // ── Top domain todo: URLs from that exact domain ─────────────────
+    // ── Top domain todo: URLs from that exact domain (subdomains incl.) ──
     if (id === 'td-top-domain' && action.exampleDomains && action.exampleDomains[0]) {
       var targetDomain = action.exampleDomains[0];
       var domainUrls = allUrls.filter(function (u) {
-        return u.domain === targetDomain || u.domain === 'www.' + targetDomain;
+        return _aimDomainMatch(u.domain, targetDomain);
       });
       if (domainUrls.length >= 1) return domainUrls.slice(0, 5);
     }
@@ -1085,7 +1115,7 @@
     if (strategy === 'next-tier-strict' && action.exampleDomains && action.exampleDomains.length) {
       var tierDomains = action.exampleDomains;
       var tierUrls = allUrls.filter(function (u) {
-        return tierDomains.some(function (d) { return u.domain === d || u.domain === 'www.' + d; });
+        return tierDomains.some(function (d) { return _aimDomainMatch(u.domain, d); });
       });
       if (tierUrls.length >= 2) return tierUrls.slice(0, 5);
     }
@@ -1187,7 +1217,7 @@
       var commTypes = ['Review', 'Category Page', 'Listicle'];
       var reviewPlatforms = ['g2.com', 'capterra.com', 'trustradius.com', 'getapp.com', 'softwareadvice.com', 'trustpilot.com'];
       var platUrls = allUrls.filter(function (u) {
-        return reviewPlatforms.some(function (rp) { return u.domain === rp || u.domain === 'www.' + rp; });
+        return reviewPlatforms.some(function (rp) { return _aimDomainMatch(u.domain, rp); });
       });
       var commPages = allUrls.filter(function (u) {
         if (!nonReddit(u)) return false;
@@ -1610,6 +1640,81 @@
       if (d !== bd && d.slice(-(bd.length + 1)) !== '.' + bd) return false;
       return (Number(s.citation_count) || 0) > 0;
     });
+  }
+
+  // ── URL-level citation aggregation ─────────────────────────────────────────
+  // Walks prompt-detail responses (data.history[].sources, each entry
+  // {domain, url, title}) and counts how often AI cited each exact URL across
+  // every run of every sampled prompt. Grouping key: trimmed URL with one
+  // trailing slash stripped. The ORIGINAL url string (only trimmed) is
+  // preserved for display and href: URLs are never constructed, guessed, or
+  // modified beyond that. The first non-empty title seen becomes the label.
+  // by_provider counts come from each run's aiModel (keeps the model-specific
+  // examples strategy working at URL level).
+  // Returns [{url, label, domain, citation_count, by_provider}] sorted by
+  // citation_count desc, capped at SOURCE_URLS_CAP. Pure; exposed on
+  // window.PBTodosLogic for unit testing.
+  var SOURCE_URLS_CAP = 50;
+  function aggregateSourceUrls(details) {
+    var byKey = {};
+    var entries = [];
+    (Array.isArray(details) ? details : []).forEach(function (detail) {
+      if (!detail || !Array.isArray(detail.history)) return;
+      detail.history.forEach(function (run) {
+        if (!run || !Array.isArray(run.sources)) return;
+        var prov = modelIdToProv(run.aiModel);
+        run.sources.forEach(function (s) {
+          if (!s || typeof s.url !== 'string') return;
+          var url = s.url.trim();
+          if (!url) return;
+          var key = url.replace(/\/$/, '');
+          var entry = byKey[key];
+          if (!entry) {
+            entry = {
+              url: url,
+              label: '',
+              domain: cleanDomain(s.domain || url),
+              citation_count: 0,
+              by_provider: {}
+            };
+            byKey[key] = entry;
+            entries.push(entry);
+          }
+          entry.citation_count += 1;
+          if (!entry.label && s.title != null && String(s.title).trim()) {
+            entry.label = String(s.title).trim();
+          }
+          if (prov) entry.by_provider[prov] = (entry.by_provider[prov] || 0) + 1;
+        });
+      });
+    });
+    entries.sort(function (a, b) { return b.citation_count - a.citation_count; });
+    return entries.slice(0, SOURCE_URLS_CAP);
+  }
+
+  // Fetch the detail endpoint for the first TOP_PROMPT_DETAILS prompts (page
+  // order) in batches of PROMPT_DETAIL_BATCH. history[].sources carries the
+  // exact cited urls + titles WITHOUT include_full_response, verified against
+  // the live API, so the cheaper call is used. Each call fails soft; the
+  // result is whatever came back. This only runs when todos regenerate
+  // (weekly or via the Generate button), so the quota cost is roughly
+  // TOP_PROMPT_DETAILS calls per brand per week, well inside the 40/min limit.
+  var TOP_PROMPT_DETAILS = 12;
+  var PROMPT_DETAIL_BATCH = 4;
+  async function fetchPromptDetails(brandId, promptRows, range) {
+    var ids = (Array.isArray(promptRows) ? promptRows : [])
+      .map(function (p) { return p ? (p.promptId || p.prompt_id || p.id) : null; })
+      .filter(Boolean)
+      .slice(0, TOP_PROMPT_DETAILS);
+    var details = [];
+    for (var i = 0; i < ids.length; i += PROMPT_DETAIL_BATCH) {
+      var batch = ids.slice(i, i + PROMPT_DETAIL_BATCH).map(function (pid) {
+        return PB.api.promptDetail(brandId, pid, range).catch(function () { return null; });
+      });
+      var settled = await Promise.all(batch);
+      settled.forEach(function (d) { if (d) details.push(d); });
+    }
+    return details;
   }
 
   function normalizeSnapshot(snap, promptRows, brandName, brandUrl) {
@@ -3119,12 +3224,21 @@
 
       var norm = normalizeSnapshot(snap, promptRows, _aimBrandName, _aimBrandUrl);
       norm.latest_by_provider = perModelStats(lookerRows, _aimBrandName);
+      // URL-level citation sampling (~12 calls), same as the weekly regenerate
+      try {
+        var promptDetails = await fetchPromptDetails(_aimBrandId, promptRows, _periodRange);
+        norm.top_source_urls = aggregateSourceUrls(promptDetails);
+      } catch (e) { /* examples fall back to domain-level entries */ }
+      // the detail panels read _snapNorm: swap in the fresh snapshot so the
+      // examples lists use the new URL-level data immediately
+      _snapNorm = norm;
+      _aimExtUrlCache = null;
       var generated = aimGenerateTodos(norm);
       var res = mergeNewTodos(_aimTodosData || [], generated, recType);
       _aimTodosData = res.merged;
       // persist into the weekly cache WITHOUT touching generatedAt, so the
       // weekly refresh cycle stays stable
-      _saveWeeklyCache(_aimTodosData, _weeklyGeneratedAt);
+      _saveWeeklyCache(_aimTodosData, _weeklyGeneratedAt, norm.top_source_urls);
 
       if (res.addedCount > 0) {
         aimShowToast(res.addedCount + ' new ' + typeLabel + ' recommendation' + (res.addedCount === 1 ? '' : 's') + ' added');
@@ -3441,10 +3555,25 @@
     if (cacheState === 'fresh') {
       _aimTodosData = storedWeekly.todos;
       _weeklyGeneratedAt = storedWeekly.generatedAt;
+      // restore the URL-level citation list baked into the cache payload so
+      // the examples panels stay URL-ranked without re-spending the
+      // prompt-detail calls on cache-fresh loads
+      if (Array.isArray(storedWeekly.sourceUrls) && storedWeekly.sourceUrls.length) {
+        _snapNorm.top_source_urls = storedWeekly.sourceUrls;
+        _aimExtUrlCache = null;
+      }
     } else {
+      // URL-level citation sampling: the prompt-detail endpoints carry the
+      // exact urls + page titles AI cited (the snapshot only has domains).
+      // Runs only on regeneration: ~12 extra API calls per brand per week.
+      try {
+        var promptDetails = await fetchPromptDetails(ctx.brandId, promptRows, ctx.range || '30d');
+        _snapNorm.top_source_urls = aggregateSourceUrls(promptDetails);
+        _aimExtUrlCache = null;
+      } catch (e) { /* examples fall back to domain-level entries */ }
       _aimTodosData = aimGenerateTodos(_snapNorm);
       _weeklyGeneratedAt = new Date().toISOString();
-      _saveWeeklyCache(_aimTodosData, _weeklyGeneratedAt);
+      _saveWeeklyCache(_aimTodosData, _weeklyGeneratedAt, _snapNorm.top_source_urls);
       // only announce a refresh when an expired set was replaced, not on the
       // first-ever generation for this brand
       if (cacheState === 'expired') {
@@ -3479,6 +3608,7 @@
     youtubeStats: youtubeStats,
     socialSourceStats: socialSourceStats,
     brandCitedInSources: brandCitedInSources,
+    aggregateSourceUrls: aggregateSourceUrls,
     normalizeSnapshot: normalizeSnapshot,
     expandTodo: _aimExpandTodo,
     weeklyCacheState: weeklyCacheState,

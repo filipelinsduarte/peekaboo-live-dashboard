@@ -30,7 +30,7 @@ User workflow: recommendations land in **Suggested**, the user promotes them to 
 - `live-app/views/todos.js`: one IIFE containing CSS injection, data normalization, the rule engine, and all UI rendering. Registered as the `todos` view in the local SPA (`PB.registerView('todos', ...)`), reachable at `#/todos`.
 - The local SPA proxies `/api/*` to the real aipeekaboo REST API with the key attached (`live-app/proxy_server.py`), so all data below is real production API data.
 
-### Data consumed: exactly three endpoints
+### Data consumed: four endpoints
 
 #### `GET /brands/:id/snapshot`
 
@@ -80,7 +80,15 @@ The pure function `perModelStats(lookerRows, brandName)` (exposed on `window.PBT
 
 Providers with fewer than 3 rows are dropped so one-off runs don't produce noisy gaps. The result is injected into the normalized snapshot as `latest_by_provider`, which is what activates rules 4 (model gap), 10 (brand sentiment), and 14 (Google AI gap).
 
-All three calls run in `Promise.all` with individual `.catch()` guards; a failed snapshot/prompts call degrades to the no-data fallback todo, and a failed looker call simply leaves `latest_by_provider` empty (the three per-model rules stay dormant for that load) rather than breaking the view.
+#### `GET /brands/:id/prompts/:pid?time_range=30d` (URL-level citation sampling)
+
+Called via `PB.api.promptDetail(brandId, promptId, range)` for the first 12 prompts from the prompts list (page order), in parallel batches of 4. Verified against the live API: `data.history[]` returns each run's `sources: [{domain, url, title}]` WITHOUT `include_full_response=true`, so the cheaper call is used.
+
+The pure function `aggregateSourceUrls(details)` (exposed on `window.PBTodosLogic`, unit-tested) walks every run's sources and counts citations per exact URL: grouping key is the trimmed URL with one trailing slash stripped, the original URL string is preserved verbatim for display and href (URLs are never constructed or modified), the first non-empty `title` becomes the `label`, and each run's `aiModel` feeds a per-URL `by_provider` count. Output: `[{url, label, domain, citation_count, by_provider}]` sorted by `citation_count` desc, capped at 50. The result is injected into the normalized snapshot as `top_source_urls`, which the detail panel's examples strategies read.
+
+**Quota cost, honestly:** this sampling step only runs when todos actually regenerate (the weekly cycle or the Generate button), roughly 12 extra API calls per brand per week, batched 4 at a time (the API allows 40/min). On cache-fresh loads the URL list is restored from the weekly cache payload (`sourceUrls`, see section 10) at zero API cost. Each call fails soft (`.catch(() => null)`); if all fail, the examples panels fall back to one synthetic entry per domain as before.
+
+All calls run with individual `.catch()` guards; a failed snapshot/prompts call degrades to the no-data fallback todo, a failed looker call simply leaves `latest_by_provider` empty (the three per-model rules stay dormant for that load), and failed prompt-detail calls leave `top_source_urls` partial or empty rather than breaking the view.
 
 ### Normalization layer
 
@@ -100,7 +108,9 @@ All three calls run in `Promise.all` with individual `.catch()` guards; a failed
   latest_by_provider: {},          // per-model visibility/sentiment/position, injected from
                                    // perModelStats(lookerRows) after normalization
   aim_real_hm_data: {},            // competitor-by-model heatmap: still EMPTY from the live APIs
-  top_source_urls: [],             // URL-level citations — EMPTY from live snapshot
+  top_source_urls: [],             // URL-level citations: empty at normalize time, then
+                                   // injected from aggregateSourceUrls(promptDetails)
+                                   // on regeneration (or restored from the weekly cache)
   active_providers: [provKey]      // providers seen in sources[].aiModels / prompts[].aiModels
 }
 ```
@@ -144,8 +154,9 @@ The shape of one generated todo. **This is the contract for a future `GET /brand
   examplesHeading: string,     // heading for the examples panel
   examplesNote: string,        // sub-note for the examples panel
   top_source_urls: { url, domain, label, citation_count }[],
-                        // example URLs; in the PoC these are derived at render time from
-                        // snapshot sources (domain-level) via per-rule selection strategies
+                        // example URLs, selected at render time via per-rule strategies from
+                        // the URL-level citation list (aggregateSourceUrls output): exact cited
+                        // URLs ranked by how often AI cited them, with page titles as labels
   _groupId: string | null,     // parent todo id (set on suggestion children only)
   _groupLabel: string | null   // parent todo title (shown as "Part of: ..." in the why panel)
 }
@@ -279,7 +290,7 @@ State invariants (single-select and bulk): completing removes from archived; arc
 2. **Why panel** (collapsed by default): `reasoning` paragraph; if the todo is a suggestion child, a "Part of: {parent title}" caption on top.
 3. **Signals** section: each signal renders as favicon (`sigs_fav`, with regex-based fallback resolution from the signal text) + bold text; signals with `sigs_expand` get a chevron toggle revealing a heading + item table; items carrying a `promptId` render as links that navigate to `#/prompts/{promptId}`.
 4. **Internal notes**: textarea persisted to `localStorage` per brand and todo (`pb_td_notes_<brandId>_<todoId>`), with a Save button that appears on focus and confirms with "Saved".
-5. **Steps + Examples grid** (2 columns): numbered steps (dark circle numerals) on the left; on the right an examples list (heading `examplesHeading`, note `examplesNote`) of up to 5 cited URLs with favicon, label, domain, citation count, and an auto-classified page-type badge (Review / Listicle / Guide / Blog Post / Forum Thread / ... via URL-pattern heuristics in `aimGetUrlPageType`). Example selection runs one of 8 per-rule strategies (`alternatives-vs`, `model-specific`, `next-tier-strict`, `topic-editorial`, `schema-examples`, `research-examples`, `editorial-guide`, `commercial-review`) with progressive fallbacks, always excluding Reddit, competitor domains, and the brand's own domain where appropriate.
+5. **Steps + Examples grid** (2 columns): numbered steps (dark circle numerals) on the left; on the right an examples list (heading `examplesHeading`, note `examplesNote`) of up to 5 cited URLs with favicon, page title (label, falling back to the URL), domain, the real per-URL citation count ("N citations"), and an auto-classified page-type badge (Review / Listicle / Guide / Blog Post / Forum Thread / ... via URL-pattern heuristics in `aimGetUrlPageType`). The list is URL-ranked: entries come from `top_source_urls` (exact URLs the AI cited, ranked by citation frequency, sampled from the prompt-detail endpoints), and links open the exact API-returned URL in a new tab (`rel="noopener noreferrer"`); URLs are never constructed or guessed. Example selection runs one of 8 per-rule strategies (`alternatives-vs`, `model-specific`, `next-tier-strict`, `topic-editorial`, `schema-examples`, `research-examples`, `editorial-guide`, `commercial-review`) with progressive fallbacks; domain-scoped strategies (the Reddit rule, the top-domain rule, next-tier, review platforms) match subdomains too (e.g. `uk.trustpilot.com` counts as `trustpilot.com`), and Reddit, competitor domains, and the brand's own domain are excluded where appropriate.
 
 ### State persistence (PoC)
 
@@ -341,7 +352,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 |---|---|
 | `live-app/views/todos.js` | Full implementation: CSS, normalization, rule engine, UI, view registration, `window.PBTodosLogic` export |
 | `live-app/assets/api.js` | API client (`window.PBApi`): endpoint paths, envelope handling, error type |
-| `live-app/tests/todos.logic.test.mjs` | 58 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion, weekly cache, merge, YouTube/social/crawlability triggers, looker per-model stats, model-gap/sentiment/Google-AI rule activation). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
+| `live-app/tests/todos.logic.test.mjs` | 66 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion, weekly cache, merge, YouTube/social/crawlability triggers, looker per-model stats, model-gap/sentiment/Google-AI rule activation, URL-level citation aggregation). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
 | `live-app/index.html` | SPA shell: sidebar nav item (`href="#/todos"`) and `<script src="/views/todos.js">` wiring |
 | `live-app/proxy_server.py` | Local proxy that maps `/api/*` to the real REST API with the key attached |
 
@@ -351,7 +362,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 
 1. **Logic is client-side.** Visible in the browser, re-runs on every view load, no caching. Moves server-side in production (Option A).
 2. **`competitors[]` may be empty.** If a brand has no competitors configured, rules 1, 7, and 12 never fire and the plan loses its strongest recommendations. Production should surface "add competitors to unlock more recommendations" in that case.
-3. **No URL-level citation data.** The snapshot only exposes domain-level sources, so the detail panel's example list falls back to one synthetic entry per domain (`url = domain`, `citation_count` = domain total). The backend has real cited URLs; using them restores per-URL examples, accurate page-type badges, and the URL-pattern strategies (`alternatives-vs`, `schema-examples`, etc.) at full strength.
+3. **URL-level citation data is sampled, not complete.** The detail panel's example lists now use real cited URLs (with page titles and per-URL citation counts) aggregated from the prompt-detail endpoints, which restores per-URL examples, accurate page-type badges, and the URL-pattern strategies at full strength. But the sample covers only the first 12 prompts (~12 API calls per regeneration, weekly), so citation counts are relative to that sample, not the whole prompt set. The domain-level fallback (one synthetic entry per domain) remains for the case where all detail calls fail. Production should aggregate URL-level citations server-side across all runs instead of sampling client-side.
 4. **Per-model data now comes from `/looker/summary`, but the heatmap is still missing.** `latest_by_provider` (visibility/sentiment/position per model) is built client-side by `perModelStats()` from the looker rows, so rules 4 (model gap), 10 (brand sentiment), and 14 (Google AI gap) fire whenever the data supports them (3+ rows per provider, 2+ providers). Two caveats remain: the competitor-by-model heatmap (`aim_real_hm_data`) still arrives empty, so rule 1's per-model signal expansion never renders, and `splitMentions` still approximates per-provider citation counts because the snapshot only gives per-domain totals. Production should compute the per-model stats server-side instead of fetching up to 5,000 looker rows into the browser.
 5. **Provider keys come from string-matching model ids** (`modelIdToProv`: regexes for gpt/gemini/sonar/aio/ai-mode). Adding a new AI model to the platform requires updating this map, or, better, the backend should return a canonical provider key per model.
 6. **Effort filter bug**: generated todos use the string `"Med effort"` but the Medium filter matches the substring `"medium"`, so the Medium effort filter currently returns nothing. Fix in production by making `effort` an enum (`low | medium | high`) and formatting the label in the UI.
@@ -368,9 +379,9 @@ Two behaviors layered on top of the rule engine. Both are PoC implementations wi
 
 The plan no longer regenerates on every page load. Cadence is weekly, per brand:
 
-- Storage: `localStorage` key `pb_td_weekly_<brandId>` holding `{ generatedAt: <ISO string>, todos: [...] }`.
+- Storage: `localStorage` key `pb_td_weekly_<brandId>` holding `{ v: <cache version, currently 3>, generatedAt: <ISO string>, todos: [...], sourceUrls: [...] }`. `sourceUrls` is the URL-level citation list (aggregateSourceUrls output) baked into the payload so cache-fresh loads restore URL-ranked examples without re-spending the ~12 prompt-detail calls. The version field invalidates stale payloads when generation output changes (v3 added `sourceUrls`).
 - On view load the stored entry is classified by the pure function `weeklyCacheState(stored, nowMs)` (exposed on `window.PBTodosLogic`, unit-tested): `'fresh'` (< 7 days = 604,800,000 ms), `'expired'` (>= 7 days, boundary inclusive), or `'missing'` (absent, unparseable, or structurally corrupt; `JSON.parse` failures and bad shapes all fall back to `'missing'`, never throw).
-- `fresh`: stored todos are used as-is. `expired` or `missing`: the two API endpoints are re-fetched, the rule engine re-runs, the cache is written with a new `generatedAt`, and (on `expired` only, not first-ever generation) the user sees the toast "Your action plan has been refreshed with this week's data".
+- `fresh`: stored todos are used as-is and `sourceUrls` is restored into the normalized snapshot. `expired` or `missing`: the API endpoints are re-fetched, the top-12 prompt details are sampled for URL-level citations (~12 calls), the rule engine re-runs, the cache is written with a new `generatedAt` plus the fresh `sourceUrls`, and (on `expired` only, not first-ever generation) the user sees the toast "Your action plan has been refreshed with this week's data".
 - The snapshot + prompts + looker fetch still runs on every load regardless of cache state, because the detail panel's example URLs and the per-model stats read the normalized snapshot. Only the todo *generation* is on the weekly cycle.
 - The existing stale-ID purge for the added/completed/archived sets runs against whichever todo set is active.
 - A caption under the page subtitle ("Updated <Mon DD> · refreshes weekly") is driven by `generatedAt`.
@@ -382,7 +393,7 @@ The plan no longer regenerates on every page load. Cadence is weekly, per brand:
 
 An accent CTA in the table filter row opens a dropdown with the six user-facing categories (Content, Social Media, Reddit, YouTube, Backlinks, Crawlability, mapping to `recType` keys `content`, `social-media`, `reddit`, `youtube`, `backlinks`, `crawlability`). Selecting one:
 
-1. Re-fetches the snapshot + prompts + looker endpoints (so the per-model rules see fresh data too).
+1. Re-fetches the snapshot + prompts + looker endpoints (so the per-model rules see fresh data too) and re-samples the top-12 prompt details for URL-level citations (~12 extra calls per click).
 2. Re-runs the deterministic rule engine, filters the output to the selected `recType`.
 3. Merges via the pure function `mergeNewTodos(existing, generated, recType)` (exposed on `window.PBTodosLogic`, unit-tested): appends only todos whose `id` is not already present, returns `{merged, addedCount}`, mutates nothing. Because archived/completed todos remain in the existing set, their ids are never resurrected.
 4. Writes the merged set back into the weekly cache **without changing `generatedAt`**, so on-demand generation does not reset the weekly window.

@@ -259,7 +259,7 @@ test('expandTodo emits children with _groupLabel for multi-suggestion parents', 
 
 // ── weeklyCacheState ─────────────────────────────────────────────────────────
 const WEEK_MS = 604800000; // 7 days
-const CACHE_V = 2; // must match WEEKLY_CACHE_VERSION in todos.js
+const CACHE_V = 3; // must match WEEKLY_CACHE_VERSION in todos.js
 const NOW = Date.UTC(2026, 5, 12, 12, 0, 0);
 function storedAt(ageMs) {
   return { v: CACHE_V, generatedAt: new Date(NOW - ageMs).toISOString(), todos: [] };
@@ -417,6 +417,118 @@ test('brandCitedInSources treats zero-citation entries and empty domains as not 
   assert.equal(L.brandCitedInSources([{ domain: 'acme.com', citation_count: 0 }], 'acme.com'), false);
   assert.equal(L.brandCitedInSources([{ domain: 'acme.com', citation_count: 5 }], ''), false);
   assert.equal(L.brandCitedInSources(null, 'acme.com'), false);
+});
+
+// ── aggregateSourceUrls (URL-level citations from prompt details) ────────────
+// Input shape: prompt-detail responses, each with history[] runs carrying
+// sources: [{domain, url, title}] and an aiModel.
+function detail(history) { return { promptId: 'p', history }; }
+
+test('aggregateSourceUrls counts duplicate URLs across runs and details', () => {
+  const out = L.aggregateSourceUrls([
+    detail([
+      { aiModel: 'google-aio', sources: [
+        { domain: 'autoexpress.co.uk', url: 'https://www.autoexpress.co.uk/best-sites', title: 'Best car part websites' },
+        { domain: 'reddit.com', url: 'https://www.reddit.com/r/CarTalkUK/comments/abc/', title: 'Cheap car parts?' },
+      ] },
+      { aiModel: 'gpt-4o-mini', sources: [
+        { domain: 'autoexpress.co.uk', url: 'https://www.autoexpress.co.uk/best-sites', title: 'duplicate title ignored' },
+      ] },
+    ]),
+    detail([
+      { aiModel: 'gemini-2.0-flash', sources: [
+        { domain: 'autoexpress.co.uk', url: 'https://www.autoexpress.co.uk/best-sites', title: '' },
+      ] },
+    ]),
+  ]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].url, 'https://www.autoexpress.co.uk/best-sites');
+  assert.equal(out[0].citation_count, 3, 'counted across runs AND details');
+  assert.equal(out[1].citation_count, 1);
+  // by_provider derived from each run's aiModel
+  assert.equal(out[0].by_provider.googleaio, 1);
+  assert.equal(out[0].by_provider.chatgpt, 1);
+  assert.equal(out[0].by_provider.gemini, 1);
+});
+
+test('aggregateSourceUrls sorts by citation_count desc', () => {
+  const out = L.aggregateSourceUrls([
+    detail([
+      { aiModel: 'gpt-4o-mini', sources: [
+        { domain: 'a.com', url: 'https://a.com/once', title: 'A' },
+        { domain: 'b.com', url: 'https://b.com/twice', title: 'B' },
+      ] },
+      { aiModel: 'gpt-4o-mini', sources: [
+        { domain: 'b.com', url: 'https://b.com/twice', title: 'B' },
+      ] },
+    ]),
+  ]);
+  assert.equal(out[0].url, 'https://b.com/twice');
+  assert.equal(out[0].citation_count, 2);
+  assert.equal(out[1].citation_count, 1);
+});
+
+test('aggregateSourceUrls groups trailing-slash variants but preserves the first-seen original URL', () => {
+  const out = L.aggregateSourceUrls([
+    detail([
+      { aiModel: 'gpt-4o-mini', sources: [
+        { domain: 'a.com', url: 'https://a.com/page/', title: 'Page' },
+        { domain: 'a.com', url: 'https://a.com/page', title: 'Page again' },
+      ] },
+    ]),
+  ]);
+  assert.equal(out.length, 1, 'slash and no-slash variants group together');
+  assert.equal(out[0].citation_count, 2);
+  assert.equal(out[0].url, 'https://a.com/page/', 'original first-seen URL string preserved verbatim');
+});
+
+test('aggregateSourceUrls skips entries with no url and keeps the first non-empty title as label', () => {
+  const out = L.aggregateSourceUrls([
+    detail([
+      { aiModel: 'gpt-4o-mini', sources: [
+        { domain: 'a.com', url: '', title: 'no url, skipped' },
+        { domain: 'a.com', title: 'missing url, skipped' },
+        { domain: 'a.com', url: 'https://a.com/x', title: '' },
+        null,
+      ] },
+      { aiModel: 'gpt-4o-mini', sources: [
+        { domain: 'a.com', url: 'https://a.com/x', title: 'Real Title' },
+        { domain: 'a.com', url: 'https://a.com/x', title: 'Later Title Ignored' },
+      ] },
+    ]),
+  ]);
+  assert.equal(out.length, 1, 'url-less entries skipped');
+  assert.equal(out[0].citation_count, 3);
+  assert.equal(out[0].label, 'Real Title', 'first NON-EMPTY title wins');
+  assert.equal(out[0].domain, 'a.com');
+});
+
+test('aggregateSourceUrls derives the domain from the url when the source has none', () => {
+  const out = L.aggregateSourceUrls([
+    detail([
+      { aiModel: 'gpt-4o-mini', sources: [
+        { url: 'https://www.uk.example.com/path/page', title: 'T' },
+      ] },
+    ]),
+  ]);
+  assert.equal(out[0].domain, 'uk.example.com');
+});
+
+test('aggregateSourceUrls caps the result at 50', () => {
+  const sources = [];
+  for (let i = 0; i < 60; i += 1) {
+    sources.push({ domain: 'a.com', url: 'https://a.com/p' + i, title: 'P' + i });
+  }
+  const out = L.aggregateSourceUrls([detail([{ aiModel: 'gpt-4o-mini', sources }])]);
+  assert.equal(out.length, 50);
+});
+
+test('aggregateSourceUrls is defensive on malformed input', () => {
+  // .length comparisons: the vm realm returns arrays with a foreign prototype,
+  // which deepStrictEqual rejects even for identical contents
+  assert.equal(L.aggregateSourceUrls(null).length, 0);
+  assert.equal(L.aggregateSourceUrls([null, {}, { history: 'nope' }]).length, 0);
+  assert.equal(L.aggregateSourceUrls([detail([null, { sources: null }])]).length, 0);
 });
 
 // ── new rules: shared fixture ────────────────────────────────────────────────
