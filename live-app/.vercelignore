@@ -1,5 +1,6 @@
-# never upload the real API key
+# never upload the real API keys
 config.json
+config2.json
 
 # local-only files not needed in production
 tests/

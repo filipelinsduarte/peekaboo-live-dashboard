@@ -28,7 +28,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ---- config -----------------------------------------------------------------
-with open(os.path.join(HERE, "config.json")) as f:
+# Optional argv: a different config filename (e.g. config2.json) so a second
+# instance with its own API key + port can run from the same directory.
+_config_name = sys.argv[1] if len(sys.argv) > 1 else "config.json"
+with open(os.path.join(HERE, _config_name)) as f:
     CONFIG = json.load(f)
 
 API_KEY = CONFIG["api_key"]

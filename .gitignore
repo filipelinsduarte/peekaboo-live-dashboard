@@ -1,5 +1,6 @@
-# API key — never commit the real config
+# API keys — never commit the real configs
 live-app/config.json
+live-app/config2.json
 
 # Static capture of the real product (18 MB, not needed by engineers)
 app/
