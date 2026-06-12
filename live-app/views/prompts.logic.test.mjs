@@ -47,11 +47,9 @@ test('visClass thresholds', () => {
   assert.equal(L.visClass(null), 'low');
 });
 
-// ---- guessDomain: product's Z() ----
-test('guessDomain strips non-alphanumerics and appends .com', () => {
-  assert.equal(L.guessDomain('Allocate Software'), 'allocatesoftware.com');
-  assert.equal(L.guessDomain('NHS & UK Co.'), 'nhsukco.com');
-  assert.equal(L.guessDomain(''), '.com');
+// ---- guessDomain is GONE (hard rule: never construct domains from names) ----
+test('guessDomain is no longer exposed (kn.com / amazonuk.com bug class eliminated)', () => {
+  assert.equal(L.guessDomain, undefined);
 });
 
 // ---- sentimentFromCounts: majority wins, positive on tie, null when empty ----
@@ -67,8 +65,8 @@ test('sentimentFromCounts', () => {
 test('summarizeDetail aggregates history + sourceSummary', () => {
   const detail = {
     history: [
-      { rank: 1, sentiment: 'positive', brandMentions: [{ entityName: 'Edelman' }, { entityName: 'Flexzo' }] },
-      { rank: 2, sentiment: 'positive', brandMentions: [{ entityName: 'Edelman' }] },
+      { rank: 1, sentiment: 'positive', brandMentions: [{ entityName: 'Edelman' }, { entityName: 'Flexzo' }], sources: [{ domain: 'Reddit.com' }, { domain: 'a.com' }] },
+      { rank: 2, sentiment: 'positive', brandMentions: [{ entityName: 'Edelman' }], sources: [{ domain: 'reddit.com' }] },
       { rank: null, sentiment: 'neutral', brandMentions: [{ entityName: 'Sherlock' }, { entityName: 'Edelman' }] },
       { rank: 3, sentiment: null, brandMentions: [{ entityName: 'Weber' }] },
     ],
@@ -87,6 +85,16 @@ test('summarizeDetail aggregates history + sourceSummary', () => {
   assert.equal(s.totalBrands, 4);
   assert.deepEqual(s.topDomains, ['b.com', 'd.com', 'a.com']); // by mentions desc
   assert.equal(s.totalDomains, 4);
+  // citedDomains: union of history run sources + sourceSummary, deduped + lowercased
+  assert.equal(JSON.stringify([...s.citedDomains].sort()),
+    JSON.stringify(['a.com', 'b.com', 'c.com', 'd.com', 'reddit.com']));
+});
+
+test('summarizeDetail citedDomains is empty when no sources anywhere', () => {
+  const s = L.summarizeDetail({ history: [{ rank: 1, sentiment: 'neutral', brandMentions: [] }], sourceSummary: [] });
+  assert.equal(s.citedDomains.length, 0);
+  const empty = L.summarizeDetail(null);
+  assert.equal(empty.citedDomains.length, 0);
 });
 
 test('summarizeDetail handles empty / missing payloads', () => {
