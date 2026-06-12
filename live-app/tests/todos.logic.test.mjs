@@ -259,9 +259,10 @@ test('expandTodo emits children with _groupLabel for multi-suggestion parents', 
 
 // ── weeklyCacheState ─────────────────────────────────────────────────────────
 const WEEK_MS = 604800000; // 7 days
+const CACHE_V = 2; // must match WEEKLY_CACHE_VERSION in todos.js
 const NOW = Date.UTC(2026, 5, 12, 12, 0, 0);
 function storedAt(ageMs) {
-  return { generatedAt: new Date(NOW - ageMs).toISOString(), todos: [] };
+  return { v: CACHE_V, generatedAt: new Date(NOW - ageMs).toISOString(), todos: [] };
 }
 
 test('weeklyCacheState returns fresh for a set under 7 days old', () => {
@@ -291,8 +292,15 @@ test('weeklyCacheState returns missing for corrupt entries, never throws', () =>
   assert.equal(L.weeklyCacheState({}, NOW), 'missing');
   assert.equal(L.weeklyCacheState({ todos: [] }, NOW), 'missing', 'no generatedAt');
   assert.equal(L.weeklyCacheState({ generatedAt: new Date(NOW).toISOString() }, NOW), 'missing', 'no todos array');
-  assert.equal(L.weeklyCacheState({ generatedAt: 'not-a-date', todos: [] }, NOW), 'missing', 'unparseable date');
-  assert.equal(L.weeklyCacheState({ generatedAt: new Date(NOW).toISOString(), todos: 'nope' }, NOW), 'missing', 'todos not an array');
+  assert.equal(L.weeklyCacheState({ v: CACHE_V, generatedAt: 'not-a-date', todos: [] }, NOW), 'missing', 'unparseable date');
+  assert.equal(L.weeklyCacheState({ v: CACHE_V, generatedAt: new Date(NOW).toISOString(), todos: 'nope' }, NOW), 'missing', 'todos not an array');
+});
+
+test('weeklyCacheState returns missing for entries from an older cache version', () => {
+  const old = { generatedAt: new Date(NOW).toISOString(), todos: [] }; // pre-versioning entry
+  assert.equal(L.weeklyCacheState(old, NOW), 'missing', 'no version field');
+  assert.equal(L.weeklyCacheState({ ...old, v: 1 }, NOW), 'missing', 'older version');
+  assert.equal(L.weeklyCacheState({ ...old, v: CACHE_V }, NOW), 'fresh', 'current version is fresh');
 });
 
 // ── mergeNewTodos ────────────────────────────────────────────────────────────

@@ -407,6 +407,9 @@
   var _aimExtUrlCache = null;
   // weekly refresh cycle (Feature: pb_td_weekly_<brandId>)
   var WEEK_MS = 604800000;         // 7 days in ms
+  // Bump when rule copy or generation logic changes: stale caches from older
+  // versions are discarded so users never see outdated titles for up to 7 days.
+  var WEEKLY_CACHE_VERSION = 2;
   var _lsWeekly = 'pb_td_weekly_default';
   var _weeklyGeneratedAt = null;   // ISO string; drives the "Updated <date>" caption
   // Generate New Recommendations button state + brand context for re-fetch
@@ -427,6 +430,7 @@
   // corrupt / partial / unparseable value falls back to 'missing', never throws.
   function weeklyCacheState(stored, nowMs) {
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return 'missing';
+    if (stored.v !== WEEKLY_CACHE_VERSION) return 'missing';
     if (!stored.generatedAt || !Array.isArray(stored.todos)) return 'missing';
     var t = Date.parse(stored.generatedAt);
     if (isNaN(t)) return 'missing';
@@ -462,7 +466,7 @@
   }
   function _saveWeeklyCache(todos, generatedAtIso) {
     try {
-      localStorage.setItem(_lsWeekly, JSON.stringify({ generatedAt: generatedAtIso, todos: todos || [] }));
+      localStorage.setItem(_lsWeekly, JSON.stringify({ v: WEEKLY_CACHE_VERSION, generatedAt: generatedAtIso, todos: todos || [] }));
     } catch (e) { /* quota / private mode */ }
   }
 
