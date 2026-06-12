@@ -392,6 +392,76 @@ test('letterAvatarColor handles empty and nullish names', () => {
   assert.ok(palette.includes(L.letterAvatarColor(undefined)));
 });
 
+// ── entityDomainMap / resolveEntityDomain ────────────────────────────────────
+test('entityDomainMap builds the map from the brand plus competitors', () => {
+  const map = L.entityDomainMap(
+    { name: 'Autodoc', url: 'https://www.autodoc.co.uk' },
+    [
+      { name: 'Euro Car Parts', url: 'https://www.eurocarparts.com' },
+      { name: 'GSF Car Parts', url: 'https://www.gsfcarparts.com' },
+    ]
+  );
+  assert.equal(map['autodoc'], 'https://www.autodoc.co.uk');
+  assert.equal(map['euro car parts'], 'https://www.eurocarparts.com');
+  assert.equal(map['gsf car parts'], 'https://www.gsfcarparts.com');
+  assert.equal(Object.keys(map).length, 3);
+});
+
+test('entityDomainMap never constructs domains: nameless or url-less entries are skipped', () => {
+  const map = L.entityDomainMap(
+    { name: 'Autodoc' }, // no url: must NOT invent autodoc.com
+    [
+      { name: 'Carwow' },          // no url
+      { name: '', url: 'https://x.com' }, // no name
+      { url: 'https://y.com' },    // no name
+      null,
+    ]
+  );
+  eqJson(map, {});
+});
+
+test('entityDomainMap keeps the first url when names collide and trims keys', () => {
+  const map = L.entityDomainMap(
+    { name: '  Autodoc  ', url: 'https://www.autodoc.co.uk' },
+    [{ name: 'autodoc', url: 'https://other.example' }]
+  );
+  assert.equal(Object.keys(map).length, 1);
+  assert.equal(map['autodoc'], 'https://www.autodoc.co.uk');
+});
+
+test('entityDomainMap handles nullish brand and competitors', () => {
+  eqJson(L.entityDomainMap(null, null), {});
+  eqJson(L.entityDomainMap(undefined, []), {});
+});
+
+test('resolveEntityDomain is a case-insensitive, trimmed, exact lookup', () => {
+  const map = L.entityDomainMap(
+    { name: 'Autodoc', url: 'https://www.autodoc.co.uk' },
+    [{ name: 'Euro Car Parts', url: 'https://www.eurocarparts.com' }]
+  );
+  assert.equal(L.resolveEntityDomain('AUTODOC', map), 'https://www.autodoc.co.uk');
+  assert.equal(L.resolveEntityDomain('  autodoc ', map), 'https://www.autodoc.co.uk');
+  assert.equal(L.resolveEntityDomain('euro car parts', map), 'https://www.eurocarparts.com');
+});
+
+test('resolveEntityDomain returns null for unknown names (no fuzzy matching, no construction)', () => {
+  const map = L.entityDomainMap(
+    { name: 'Autodoc', url: 'https://www.autodoc.co.uk' },
+    []
+  );
+  assert.equal(L.resolveEntityDomain('Carwow', map), null);
+  assert.equal(L.resolveEntityDomain('Auto', map), null, 'prefixes must not match');
+  assert.equal(L.resolveEntityDomain('Autodoc UK', map), null, 'supersets must not match');
+});
+
+test('resolveEntityDomain handles nullish and blank inputs', () => {
+  const map = { autodoc: 'https://www.autodoc.co.uk' };
+  assert.equal(L.resolveEntityDomain(null, map), null);
+  assert.equal(L.resolveEntityDomain('', map), null);
+  assert.equal(L.resolveEntityDomain('   ', map), null);
+  assert.equal(L.resolveEntityDomain('Autodoc', null), null);
+});
+
 // ── summary ──────────────────────────────────────────────────────────────────
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

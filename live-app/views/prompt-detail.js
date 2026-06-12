@@ -22,10 +22,13 @@
  *     window._aimPromptResponseHistory. Dates and per-model rows are grouped
  *     from history[] (groupRunsByDate).
  *   - Model badges use PB.modelLogo/PB.modelLabel for the live model slugs.
- *   - brandMentions entries carry NO domain field, so mention icons are
- *     deterministic letter avatars (the v4 aimBrandIcon fallback path); we
- *     never guess domain URLs. Citation icons use real domains via
- *     PB.favicon(sources[].domain).
+ *   - brandMentions entries carry NO domain field, so mention icons resolve
+ *     entity names through entityDomainMap (the brand's own url from
+ *     PB.state.brands + tracked competitor urls from PB.api.competitors,
+ *     same mechanism as the competitors view's urlByName); entities that do
+ *     not resolve keep the deterministic letter avatar (the v4 aimBrandIcon
+ *     fallback path). We never guess domain URLs. Citation icons use real
+ *     domains via PB.favicon(sources[].domain).
  *   - "No data for this date" filler rows are shown for models that ran on
  *     other dates of this prompt (consistent model set across sections), not
  *     a hardcoded provider list.
@@ -318,6 +321,37 @@
     return LETTER_PALETTE[h % LETTER_PALETTE.length];
   }
 
+  // Entity-name -> domain map for mention favicons, same mechanism as the
+  // competitors view's urlByName (views/competitors.js, buildPromptMatrixCard):
+  // the brand's own record (PB.state.brands entry: {name, url}) plus the
+  // tracked competitors from GET /brands/:id/competitors ({name, url}).
+  // Only API-provided URLs go in; we NEVER construct a domain from an entity
+  // name (hard rule). Keys are trimmed + lowercased for the lookup.
+  function entityDomainMap(brand, competitors) {
+    var map = {};
+    function add(name, url) {
+      if (!name || !url) return;
+      var key = String(name).trim().toLowerCase();
+      if (!key) return;
+      if (!Object.prototype.hasOwnProperty.call(map, key)) map[key] = String(url);
+    }
+    if (brand) add(brand.name, brand.url);
+    (competitors || []).forEach(function (c) {
+      if (c) add(c.name, c.url);
+    });
+    return map;
+  }
+
+  // Case-insensitive exact-name lookup against entityDomainMap's output.
+  // Returns the stored url/domain string, or null when the entity is unknown
+  // (callers fall back to the deterministic letter avatar).
+  function resolveEntityDomain(name, map) {
+    if (!name || !map) return null;
+    var key = String(name).trim().toLowerCase();
+    if (!key) return null;
+    return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+  }
+
   window.PBPromptDetailLogic = {
     escapeHtml: escapeHtml,
     normalizeSpaces: normalizeSpaces,
@@ -329,15 +363,51 @@
     topEntities: topEntities,
     previewText: previewText,
     letterAvatarColor: letterAvatarColor,
+    entityDomainMap: entityDomainMap,
+    resolveEntityDomain: resolveEntityDomain,
   };
 
   // ══════════════════════════════════════════════════════════════════════════
   // View
   // ══════════════════════════════════════════════════════════════════════════
 
+  // Tracked-competitor list cached per brand (one extra GET per brand, shared
+  // across detail page views). entityDomains is the resolver map for the
+  // current render; the run-row/modal builders read it via mentionIcon so the
+  // modal (opened later from a row click) sees the same data.
+  var competitorsCache = { brandId: null, list: null };
+  var entityDomains = {};
+
+  // The brand's own record ({name, url, ...}) from PB.state.brands.
+  function brandRecord(brandId) {
+    try {
+      var brands = (PB.state && PB.state.brands) || [];
+      for (var i = 0; i < brands.length; i++) {
+        if (brands[i] && brands[i].id === brandId) return brands[i];
+      }
+    } catch (e) { /* degrade to letter avatars */ }
+    return null;
+  }
+
   window.PBPromptDetail = async function (root, ctx) {
     if (!root) return;
     var promptId = ctx && ctx.param;
+    var brandId = ctx && ctx.brandId;
+
+    // Kick off the competitors fetch alongside the detail call; any failure
+    // degrades to letter avatars (null list -> empty map entries).
+    var compPromise;
+    if (competitorsCache.brandId === brandId && competitorsCache.list) {
+      compPromise = Promise.resolve(competitorsCache.list);
+    } else {
+      compPromise = PB.api.competitors(brandId)
+        .then(function (comp) {
+          var list = (comp && Array.isArray(comp.competitors)) ? comp.competitors : [];
+          competitorsCache = { brandId: brandId, list: list };
+          return list;
+        })
+        .catch(function () { return null; });
+    }
 
     var detail = null;
     try {
@@ -359,6 +429,9 @@
     detail = detail || {};
     injectModalCSS();
     injectPageCSS();
+
+    var compList = await compPromise;
+    entityDomains = entityDomainMap(brandRecord(brandId), compList || []);
 
     var history = detail.history || [];
     var groups = groupRunsByDate(history);
@@ -460,13 +533,12 @@
       ]),
     ]);
 
-    // Top Brands cluster: deterministic letter avatars (no domains in the API)
+    // Top Brands cluster: real favicons for resolvable entities (own brand +
+    // tracked competitors via entityDomains), letter avatars for the rest
     var brandIcons = el('div', { class: 'pb-pd-icon-row' });
     if (tops.topBrands.length) {
       tops.topBrands.slice(0, 4).forEach(function (b) {
-        var icon = brandLetterIcon(b.name, 22);
-        icon.title = b.name;
-        brandIcons.appendChild(icon);
+        brandIcons.appendChild(mentionIcon(b.name, 22));
       });
       if (tops.topBrands.length > 4) {
         brandIcons.appendChild(el('span', { class: 'pb-pd-icon-more', text: '+' + (tops.topBrands.length - 4) }));
@@ -701,16 +773,15 @@
       posNode = el('span', { class: 'pb-pd-dash', text: '–' });
     }
 
-    // Mentions: top-3 deterministic letter avatars (API has no brand domains)
+    // Mentions: top-3 icons, real favicon when the entity resolves in
+    // entityDomains, letter avatar otherwise
     var mentions = run.brandMentions || [];
     var mentNode;
     if (mentions.length) {
       mentNode = el('div', { class: 'pb-pd-cell-icons' });
       mentions.slice(0, 3).forEach(function (m) {
         var name = (m && m.entityName) || '?';
-        var icon = brandLetterIcon(name, 16);
-        icon.title = name;
-        mentNode.appendChild(icon);
+        mentNode.appendChild(mentionIcon(name, 16));
       });
       if (mentions.length > 3) {
         mentNode.appendChild(el('span', { class: 'pb-pd-icon-more', text: '+' + (mentions.length - 3) }));
@@ -976,9 +1047,39 @@
     return 'neutral';
   }
 
+  // Mention icon: real favicon when the entity name resolves (own brand or a
+  // tracked competitor in entityDomains), deterministic letter avatar
+  // otherwise. The img swaps itself for the letter avatar if the favicon
+  // fails to load. Domains are never constructed from names.
+  function mentionIcon(name, sz) {
+    var label = String(name || '?');
+    var domain = resolveEntityDomain(label, entityDomains);
+    if (!domain) {
+      var fallback = brandLetterIcon(label, sz);
+      fallback.title = label;
+      return fallback;
+    }
+    var r = Math.round(sz * 0.22);
+    var img = el('img', {
+      src: PB.favicon(domain),
+      alt: '',
+      title: label,
+      style: {
+        width: sz + 'px', height: sz + 'px', borderRadius: r + 'px',
+        flexShrink: '0', display: 'block', objectFit: 'contain',
+      },
+      onerror: function () {
+        var letter = brandLetterIcon(label, sz);
+        letter.title = label;
+        if (img && img.parentNode) img.parentNode.replaceChild(letter, img);
+      },
+    });
+    return img;
+  }
+
   // v4 aimBrandIcon letter fallback (line 5898): deterministic palette hash.
-  // brandMentions entries have no domain field, so we never guess one; the
-  // letter avatar is the v4 fallback path for exactly this case.
+  // Used for every mention entity that does not resolve in entityDomains
+  // (untracked entities); we never guess a domain from the name.
   function brandLetterIcon(name, sz) {
     var n = String(name || '?');
     var letter = n.charAt(0).toUpperCase();
@@ -1129,7 +1230,7 @@
     if (m.mentionSummary) titleParts.push(m.mentionSummary);
 
     var children = [
-      brandLetterIcon(name, 18),
+      mentionIcon(name, 18),
       el('span', { class: 'aim-rm-brand-chip-name' + (isOwnBrand ? ' you' : ''), text: name }),
     ];
     if (m.rank !== null && m.rank !== undefined) {
