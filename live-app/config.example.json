@@ -1,0 +1,6 @@
+{
+  "api_key": "pk_YOUR_API_KEY_HERE",
+  "api_base": "https://www.aipeekaboo.com/api/v1",
+  "port": 7898,
+  "cache_ttl_seconds": 300
+}

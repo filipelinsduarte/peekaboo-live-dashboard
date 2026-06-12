@@ -1,0 +1,14 @@
+# API key — never commit the real config
+live-app/config.json
+
+# Static capture of the real product (18 MB, not needed by engineers)
+app/
+capture/
+verify-agentd/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

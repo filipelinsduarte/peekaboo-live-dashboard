@@ -1,0 +1,276 @@
+/* live-overrides.css — helper layer on top of the REAL compiled product CSS.
+   Uses the product's own variables (--theme-primary, --aim-*, shadcn hsl vars)
+   with fallbacks copied verbatim from app/_next/static/css/:
+     --theme-primary: hsl(300 39% 51%) = #b352b3
+     --aim-border: #eeeeef   --aim-border-light: rgba(0,0,0,.05)
+     --aim-surface-alt: #fafafa   --aim-text: #1c1917
+     --aim-text-muted: #545d6c    --aim-text-faint: #9ca3af
+     shadcn --border: 0 0% 89.8%  --muted: 0 0% 96.1%  --radius: 0.5rem */
+
+/* Force the product's primary font (Inter) so it resolves reliably locally. */
+body, #view, header, button, input, select, table {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#view { color: hsl(var(--foreground, 0 0% 3.9%)); }
+/* dashboard injects its own `.container` wrapper (exact capture); other views
+   get standard page padding via this :has() fallback (Chrome supports :has). */
+#view:not(:has(> .container)) { padding: 1.25rem 1rem 2rem; }
+#view > .container { padding-top: 1rem; }
+
+/* ---------------------------------------------------------------- cards */
+/* shadcn card chrome: rounded-lg border bg-card shadow-sm */
+.pb-card {
+  background: hsl(var(--card, 0 0% 100%));
+  border: 1px solid hsl(var(--border, 0 0% 89.8%));
+  border-radius: var(--radius, 0.5rem);
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+.pb-card-pad { padding: 1.5rem; }
+/* aim card variant (Prompts/Sources): 10px radius, #eeeeef border, no shadow */
+.pb-card-aim {
+  background: var(--aim-surface, #fff);
+  border: 1px solid var(--aim-border, #eeeeef);
+  border-radius: var(--aim-radius, 10px);
+  overflow: hidden;
+  box-shadow: none;
+}
+.text-muted { color: var(--aim-text-muted, #545d6c); }
+
+/* ---------------------------------------------------------------- table */
+/* matches product .aim-full-table: 12px body; th 10px/600 uppercase .06em,
+   #9ca3af on #fafafa header; light dividers; row hover #fafafa */
+.pb-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pb-table th {
+  text-align: left; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--aim-text-faint, #9ca3af);
+  background: var(--aim-surface-alt, #fafafa);
+  padding: 8px 12px; border-bottom: 1px solid var(--aim-border, #eeeeef);
+  white-space: nowrap;
+}
+.pb-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--aim-border-light, rgba(0, 0, 0, 0.05));
+  vertical-align: middle;
+}
+.pb-table td.col-center, .pb-table th.col-center { text-align: center; }
+.pb-table tr:last-child td { border-bottom: none; }
+.pb-table tbody tr:hover td { background: var(--aim-surface-alt, #fafafa); }
+.pb-table tr.clickable:hover { cursor: pointer; }
+
+/* ---------------------------------------------------------------- bars */
+/* product visibility bar: 4px gray-100 track, rounded-full fill.
+   Brand fill = theme purple; competitor rows use .gray (gray-400). */
+.pb-bar {
+  height: 4px; border-radius: 9999px; background: #f3f4f6;
+  overflow: hidden; min-width: 60px;
+}
+.pb-bar > span {
+  display: block; height: 100%;
+  background: var(--theme-primary, #b352b3); border-radius: 9999px;
+}
+.pb-bar.gray > span, .pb-bar-gray > span { background: #9ca3af; }
+.pb-bar.green > span { background: var(--aim-success, #10b981); }
+
+/* ---------------------------------------------------------------- badges */
+/* matches product .aim-sent-badge: 11px/600, 2px 8px, pill, 1px border, capitalize */
+.pb-badge {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 100px; border: 1px solid var(--aim-border, #eeeeef);
+  background: var(--aim-surface-alt, #fafafa);
+  color: var(--aim-text-muted, #545d6c);
+  text-transform: capitalize; line-height: 1.35; white-space: nowrap;
+}
+.pb-badge-green   { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+.pb-badge-red     { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.pb-badge-neutral { background: var(--aim-surface-alt, #fafafa); color: var(--aim-text-muted, #545d6c); border-color: var(--aim-border, #eeeeef); }
+.pb-badge-brand   { background: var(--theme-primary, #b352b3); color: var(--theme-on-primary, #fff); border-color: var(--theme-primary, #b352b3); }
+
+/* fallback if a view renders sentiment pills before the aim CSS is injected */
+.aim-sent-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 100px; border: 1px solid; display: inline-block;
+  text-transform: capitalize;
+}
+.aim-sent-badge.positive { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+.aim-sent-badge.neutral  { background: var(--aim-surface-alt, #fafafa); color: var(--aim-text-muted, #545d6c); border-color: var(--aim-border, #eeeeef); }
+.aim-sent-badge.negative { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+
+/* ---------------------------------------------------------------- chips */
+.pb-fav {
+  width: 16px; height: 16px; border-radius: 4px; flex: none;
+  background: hsl(var(--muted, 0 0% 96.1%)); object-fit: cover;
+}
+.pb-logo { width: 20px; height: 20px; border-radius: 9999px; flex: none; }
+
+/* ---------------------------------------------------------------- skeleton */
+.pb-skel {
+  background: linear-gradient(90deg,
+    hsl(var(--muted, 0 0% 96.1%)) 25%,
+    hsl(var(--muted, 0 0% 96.1%) / 0.55) 37%,
+    hsl(var(--muted, 0 0% 96.1%)) 63%);
+  background-size: 400% 100%; animation: pb-shimmer 1.2s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+@keyframes pb-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+/* ---------------------------------------------------------------- popover */
+.pb-pop {
+  position: absolute; z-index: 60; background: hsl(var(--popover, 0 0% 100%));
+  border: 1px solid var(--aim-border, #eeeeef);
+  border-radius: var(--aim-radius, 10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.13);
+}
+
+/* ------------------------------------------- header filter dropdowns */
+/* Faithful to the live shadcn/Radix popover (capture: models-dropdown-open.html):
+   trigger  = outline button: h-9, rounded-md, 1px border-input, white bg,
+              14px text, icon + label + chevron at opacity .5, hover bg-accent
+   panel    = w-[220px] p-1 rounded-md border bg-popover shadow-md, align end,
+              open anim: fade-in-0 zoom-in-95 slide-in-from-top-2, 150ms
+   row      = px-2 py-1.5 text-sm rounded-md hover:bg-accent;
+              active row bg-accent/50 font-medium + 14px check in 16px slot */
+
+.pb-dd-trigger {
+  display: inline-flex; align-items: center; justify-content: space-between;
+  gap: 8px; height: 36px; padding: 8px 12px;
+  background: hsl(var(--background, 0 0% 100%));
+  color: hsl(var(--foreground, 0 0% 3.9%));
+  border: 1px solid hsl(var(--input, 0 0% 89.8%));
+  border-radius: calc(var(--radius, 0.5rem) - 2px);              /* rounded-md */
+  font-size: 14px; font-weight: 400; line-height: 20px; white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s cubic-bezier(0.4, 0, 0.2, 1),
+              color .15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pb-dd-trigger:hover {
+  background: hsl(var(--accent, 0 0% 96.1%));                    /* hover:bg-accent */
+  color: hsl(var(--accent-foreground, 0 0% 9%));
+}
+.pb-dd-trigger:focus-visible {
+  outline: 2px solid hsl(var(--ring, 0 0% 3.9%) / 0.3); outline-offset: 2px;
+}
+.pb-dd-trigger-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pb-dd-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-dd-chevron { display: inline-flex; opacity: 0.5; flex-shrink: 0; }
+.pb-dd-chevron svg { width: 16px; height: 16px; }
+
+.pb-dd-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; color: hsl(var(--muted-foreground, 0 0% 45.1%));
+}
+.pb-dd-fav { width: 16px; height: 16px; border-radius: 2px; flex-shrink: 0; object-fit: contain; }  /* rounded-sm */
+
+.pb-dd-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+  width: 220px; padding: 4px;                                    /* w-[220px] p-1 */
+  background: hsl(var(--popover, 0 0% 100%));
+  color: hsl(var(--popover-foreground, 0 0% 3.9%));
+  border: 1px solid hsl(var(--border, 0 0% 89.8%));
+  border-radius: calc(var(--radius, 0.5rem) - 2px);              /* rounded-md */
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+              0 2px 4px -2px rgba(0, 0, 0, 0.1);                 /* shadow-md */
+  transform-origin: top right;                                   /* radix popper origin */
+  animation: pb-dd-enter 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pb-dd-panel.pb-dd-leaving {
+  animation: pb-dd-exit 130ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+@keyframes pb-dd-enter {                                          /* fade-in-0 zoom-in-95 slide-in-from-top-2 */
+  from { opacity: 0; transform: translateY(-8px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pb-dd-exit {                                           /* fade-out-0 zoom-out-95 */
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(-8px) scale(0.95); }
+}
+
+.pb-dd-item {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;                                               /* px-2 py-1.5 */
+  background: transparent; border: 0;
+  border-radius: calc(var(--radius, 0.5rem) - 2px);               /* rounded-md */
+  font-size: 14px; font-weight: 400; line-height: 20px;
+  color: hsl(var(--popover-foreground, 0 0% 3.9%));
+  text-align: left; cursor: pointer;
+  transition: background-color .15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pb-dd-item:hover { background: hsl(var(--accent, 0 0% 96.1%)); } /* hover:bg-accent */
+.pb-dd-item-active {
+  background: hsl(var(--accent, 0 0% 96.1%) / 0.5);               /* bg-accent/50 */
+  font-weight: 500;                                               /* font-medium */
+}
+.pb-dd-item-active:hover { background: hsl(var(--accent, 0 0% 96.1%)); }
+.pb-dd-item .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-dd-check {
+  width: 16px; height: 16px;                                      /* w-4 h-4 slot */
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.pb-dd-check svg { width: 14px; height: 14px; }                   /* lucide check w-3.5 h-3.5 */
+.pb-dd-sep { height: 1px; background: hsl(var(--border, 0 0% 89.8%)); margin: 4px 0; }  /* h-px bg-border my-1 */
+
+/* ---------------------------------------------------------------- toast */
+#toast { position: fixed; bottom: 1rem; right: 1rem; z-index: 80; display: flex; flex-direction: column; gap: 0.5rem; }
+.pb-toast {
+  background: hsl(var(--foreground, 0 0% 3.9%)); color: #fff; font-size: 0.8125rem;
+  padding: 0.6rem 0.9rem; border-radius: 0.5rem;
+  box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); max-width: 360px;
+}
+.pb-toast-err { background: #b91c1c; }
+
+/* ---------------------------------------------------------------- sidebar */
+/* product active nav item: text-gray-900 bg-gray-100 font-medium
+   + 3x16px theme-purple bar pinned to the left edge, vertically centered.
+   The logo link (aria-label="PeekABoo home") also points at #/dashboard,
+   so it is explicitly excluded — the logo must never get the gray bg or
+   the purple bar (matches live: logo area is transparent on the pure-white
+   sidebar, its only decoration is the container's 1px gray-100 bottom border). */
+a.pb-active:not([aria-label="PeekABoo home"]) {
+  color: #111827 !important;
+  background: #f3f4f6 !important;
+  font-weight: 500 !important;
+  position: relative;
+}
+a.pb-active:not([aria-label="PeekABoo home"])::before {
+  content: '';
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 16px; border-radius: 9999px;
+  background: var(--theme-primary, #b352b3);
+}
+
+/* hard guarantee: logo link stays undecorated even if a class leaks onto it */
+a[aria-label="PeekABoo home"] {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+a[aria-label="PeekABoo home"]::before,
+a[aria-label="PeekABoo home"]::after {
+  content: none !important;
+}
+
+/* ------------------------------------------- brand switcher / modals */
+/* The brand dropdown, Manage Brands sheet and Create Brand wizard built by
+   app.js reuse the product's own compiled tailwindcss-animate utilities by
+   toggling data-state="open|closed" (verified present in
+   _next/static/css/7576357c5c60b774.css). The rules below are only small
+   safety nets on top of that. */
+
+/* while the close animation plays, the node must not eat clicks */
+[role='menu'][data-state='closed'],
+[role='dialog'][data-state='closed'] {
+  pointer-events: none;
+}
+
+/* the dropdown sizes to its widest row (w-fit); never overflow the viewport */
+[role='menu'][data-state] {
+  max-width: min(92vw, 860px);
+}
+
+/* native selects inside the dropdown header stay compact like the product */
+[role='menu'] select {
+  font-family: inherit;
+  color: #374151; /* gray-700 */
+}

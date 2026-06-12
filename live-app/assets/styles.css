@@ -1,0 +1,288 @@
+/* Peekaboo live dashboard — custom layer on top of Tailwind CDN.
+   Tokens extracted from the REAL aipeekaboo.com compiled CSS
+   (app/_next/static/css/7576357c5c60b774.css + fb9cebaaf381bc0d.css):
+   - theme primary: hsl(300 39% 51%) = #b352b3
+   - shadcn neutral palette: border #e5e5e5, muted #f5f5f5, fg #0a0a0a, radius 0.5rem
+   - aim layer: border #eeeeef, surface-alt #fafafa, text #1c1917, radius 10px */
+
+:root {
+  --brand: #b352b3;                 /* hsl(300 39% 51%) */
+  --brand-hsl: 300 39% 51%;
+  --brand-hover: #a043a0;
+  --brand-soft: rgba(179, 82, 179, 0.12);
+  --theme-primary: var(--brand);
+  --theme-on-primary: #ffffff;
+
+  --ink: #1c1917;                   /* --aim-text */
+  --muted: #545d6c;                 /* --aim-text-muted */
+  --faint: #9ca3af;                 /* --aim-text-faint */
+  --border: #e5e5e5;                /* shadcn --border: 0 0% 89.8% */
+  --aim-border: #eeeeef;
+  --aim-border-light: rgba(0, 0, 0, 0.05);
+  --surface: #ffffff;
+  --surface-alt: #fafafa;           /* --aim-surface-alt */
+  --surface-hover: #f4f4f5;         /* --aim-surface-hover */
+  --success: #10b981;
+  --danger: #ef4444;
+
+  --radius: 0.5rem;                 /* shadcn --radius */
+  --aim-radius: 10px;
+  --card-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);  /* tailwind shadow-sm */
+}
+
+* { -webkit-font-smoothing: antialiased; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- cards */
+/* shadcn card: rounded-lg border bg-card shadow-sm */
+.pb-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+}
+.pb-card-pad { padding: 1.5rem; }
+
+/* aim card variant (Prompts/Sources tables): 10px radius, lighter border, no shadow */
+.pb-card-aim,
+.aim-card {
+  background: var(--surface);
+  border: 1px solid var(--aim-border);
+  border-radius: var(--aim-radius);
+  overflow: hidden;
+}
+.aim-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--aim-border-light);
+  gap: 10px; flex-wrap: wrap;
+}
+.aim-card-title { font-size: 13px; font-weight: 700; color: var(--ink); }
+.aim-card-desc { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+.pb-title { font-weight: 600; letter-spacing: -0.025em; color: var(--ink); }
+.text-muted { color: var(--muted); }
+
+/* ---------------------------------------------------------------- sidebar */
+/* product nav item: text-[13px] px-3 py-2 rounded-lg
+   active: text-gray-900 bg-gray-100 font-medium + 3x16px brand bar at left */
+.pb-nav {
+  position: relative;
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.5rem 0.75rem; margin: 0 0.5rem;
+  border-radius: 0.5rem; font-size: 13px; font-weight: 400;
+  color: #6b7280; cursor: pointer; user-select: none;
+  text-decoration: none;
+  transition: color .15s, background-color .15s;
+}
+.pb-nav:hover { background: #f9fafb; color: #111827; }
+.pb-nav.active,
+.pb-nav.pb-active {
+  background: #f3f4f6; color: #111827; font-weight: 500;
+}
+.pb-nav.active .pb-nav-bar,
+.pb-nav.pb-active .pb-nav-bar { opacity: 1; }
+.pb-nav-bar {
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 16px;
+  background: var(--brand); border-radius: 9999px; opacity: 0;
+}
+/* fallback when no .pb-nav-bar element exists inside the link.
+   Excludes the logo anchor (aria-label="PeekABoo home"): it links to
+   #/dashboard too but must never get the active gray bg or purple bar. */
+a.pb-active:not([aria-label="PeekABoo home"]) { color: #111827 !important; background: #f3f4f6 !important; font-weight: 500; }
+
+/* logo area stays clean on the pure-white sidebar: no background, no bar */
+a[aria-label="PeekABoo home"] { background: transparent !important; }
+a[aria-label="PeekABoo home"]::before,
+a[aria-label="PeekABoo home"]::after { content: none !important; }
+
+/* ---------------------------------------------------------------- buttons */
+.pb-btn {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: 0.375rem; padding: 0.4rem 0.7rem;
+  font-size: 0.8125rem; font-weight: 500; color: var(--ink);
+  cursor: pointer; white-space: nowrap;
+  transition: background-color .15s;
+}
+.pb-btn:hover { background: var(--surface-alt); }
+.pb-btn-primary { background: var(--brand); color: var(--theme-on-primary); border-color: var(--brand); }
+.pb-btn-primary:hover { background: var(--brand-hover); }
+
+/* ---------------------------------------------------------------- badges */
+/* product sentiment badge (.aim-sent-badge): 11px/600, 2px 8px, pill, 1px border */
+.pb-badge {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 100px; border: 1px solid transparent;
+  background: var(--surface-alt); color: var(--muted);
+  border-color: var(--aim-border);
+  text-transform: capitalize; line-height: 1.35; white-space: nowrap;
+}
+.pb-badge-green   { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+.pb-badge-red     { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.pb-badge-neutral { background: var(--surface-alt); color: var(--muted); border-color: var(--aim-border); }
+.pb-badge-brand   { background: var(--brand); color: #fff; border-color: var(--brand); }
+
+/* exact product class, as fallback when real CSS is not loaded */
+.aim-sent-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 100px; border: 1px solid; display: inline-block;
+  text-transform: capitalize;
+}
+.aim-sent-badge.positive { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+.aim-sent-badge.neutral  { background: var(--surface-alt); color: var(--muted); border-color: var(--aim-border); }
+.aim-sent-badge.negative { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+
+/* ---------------------------------------------------------------- table */
+/* product table (.aim-full-table): 12px body; th 10px/600 uppercase .06em,
+   faint gray text on #fafafa header bg; light row dividers; row hover #fafafa */
+.pb-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pb-table th {
+  text-align: left; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint);
+  padding: 8px 12px; border-bottom: 1px solid var(--aim-border);
+  background: var(--surface-alt); white-space: nowrap;
+}
+.pb-table td {
+  padding: 10px 12px; border-bottom: 1px solid var(--aim-border-light);
+  vertical-align: middle;
+}
+.pb-table td.col-center, .pb-table th.col-center { text-align: center; }
+.pb-table tr:last-child td { border-bottom: none; }
+.pb-table tbody tr:hover td { background: var(--surface-alt); }
+.pb-table tr.clickable:hover { cursor: pointer; }
+
+/* ---------------------------------------------------------------- bars */
+/* product visibility bar: 4px track bg-gray-100, rounded-full fill.
+   Competitor rows use gray-400 fill; the tracked brand uses theme purple. */
+.pb-bar {
+  height: 4px; border-radius: 9999px; background: #f3f4f6;
+  overflow: hidden; min-width: 60px;
+}
+.pb-bar > span { display: block; height: 100%; background: var(--brand); border-radius: 9999px; }
+.pb-bar.gray > span, .pb-bar-gray > span { background: #9ca3af; }
+.pb-bar.green > span { background: var(--success); }
+
+/* ---------------------------------------------------------------- skeleton */
+.pb-skel {
+  background: linear-gradient(90deg, #f4f4f5 25%, #e9ebee 37%, #f4f4f5 63%);
+  background-size: 400% 100%; animation: pb-shimmer 1.2s ease-in-out infinite;
+  border-radius: 0.375rem;
+}
+@keyframes pb-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+/* ---------------------------------------------------------------- popover */
+.pb-pop {
+  position: absolute; z-index: 50; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--aim-radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.13);
+}
+
+/* ------------------------------------------- header filter dropdowns */
+/* Faithful to the live shadcn/Radix popover (models-dropdown-open.html):
+   trigger  = outline button: h-9, rounded-md, 1px border-input (#e5e5e5),
+              white bg, 14px text, hover bg-accent (#f5f5f5)
+   panel    = w-[220px] p-1 rounded-md border bg-popover shadow-md,
+              data-[state=open]: fade-in-0 zoom-in-95 slide-in-from-top-2, 150ms
+   row      = px-2 py-1.5 text-sm rounded-md hover:bg-accent;
+              active row bg-accent/50 font-medium + 14px check in 16px slot */
+
+.pb-dd-trigger {
+  display: inline-flex; align-items: center; justify-content: space-between;
+  gap: 8px; height: 36px; padding: 8px 12px;
+  background: #ffffff; color: #0a0a0a;
+  border: 1px solid var(--border); border-radius: 6px;          /* rounded-md */
+  font-size: 14px; font-weight: 400; line-height: 20px; white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s cubic-bezier(0.4, 0, 0.2, 1),
+              color .15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pb-dd-trigger:hover { background: #f5f5f5; }                    /* hover:bg-accent */
+.pb-dd-trigger:focus-visible { outline: 2px solid var(--brand-soft); outline-offset: 2px; }
+.pb-dd-trigger-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pb-dd-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-dd-chevron { display: inline-flex; opacity: 0.5; flex-shrink: 0; }
+.pb-dd-chevron svg { width: 16px; height: 16px; }
+
+.pb-dd-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--muted); }
+.pb-dd-fav { width: 16px; height: 16px; border-radius: 2px; flex-shrink: 0; object-fit: contain; }  /* rounded-sm */
+
+.pb-dd-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 50;
+  width: 220px; padding: 4px;                                    /* w-[220px] p-1 */
+  background: #ffffff; color: #0a0a0a;                           /* bg-popover */
+  border: 1px solid var(--border); border-radius: 6px;           /* rounded-md */
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+              0 2px 4px -2px rgba(0, 0, 0, 0.1);                 /* shadow-md */
+  transform-origin: top right;                                   /* radix popper origin */
+  animation: pb-dd-enter 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pb-dd-panel.pb-dd-leaving {
+  animation: pb-dd-exit 130ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+@keyframes pb-dd-enter {                                          /* fade-in-0 zoom-in-95 slide-in-from-top-2 */
+  from { opacity: 0; transform: translateY(-8px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pb-dd-exit {                                           /* fade-out-0 zoom-out-95 */
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(-8px) scale(0.95); }
+}
+
+.pb-dd-item {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;                                               /* px-2 py-1.5 */
+  background: transparent; border: 0; border-radius: 6px;         /* rounded-md */
+  font-size: 14px; font-weight: 400; line-height: 20px; color: #0a0a0a;
+  text-align: left; cursor: pointer;
+  transition: background-color .15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pb-dd-item:hover { background: #f5f5f5; }                        /* hover:bg-accent */
+.pb-dd-item-active { background: rgba(245, 245, 245, 0.5); font-weight: 500; }  /* bg-accent/50 font-medium */
+.pb-dd-item-active:hover { background: #f5f5f5; }
+.pb-dd-item .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-dd-check {
+  width: 16px; height: 16px;                                      /* w-4 h-4 slot */
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.pb-dd-check svg { width: 14px; height: 14px; }                   /* lucide check w-3.5 h-3.5 */
+.pb-dd-sep { height: 1px; background: var(--border); margin: 4px 0; }  /* h-px bg-border my-1 */
+
+/* ---------------------------------------------------------------- toast */
+.pb-toast {
+  background: var(--ink); color: #fff; font-size: 0.8125rem;
+  padding: 0.6rem 0.9rem; border-radius: 0.5rem;
+  box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); max-width: 360px;
+}
+.pb-toast-err { background: #b91c1c; }
+
+/* ---------------------------------------------------------------- chips */
+.pb-fav { width: 16px; height: 16px; border-radius: 4px; flex: none; background: #f3f4f6; object-fit: cover; }
+.pb-logo { width: 20px; height: 20px; border-radius: 9999px; flex: none; }
+
+/* ------------------------------------------- brand switcher / modals */
+/* NOTE: index.html loads live-overrides.css (this file is the standalone
+   token layer kept in sync). The brand dropdown, Manage Brands sheet and
+   Create Brand wizard built by app.js reuse the product's compiled
+   tailwindcss-animate utilities by toggling data-state="open|closed".
+   The rules below are only small safety nets on top of that. */
+
+[role='menu'][data-state='closed'],
+[role='dialog'][data-state='closed'] {
+  pointer-events: none;
+}
+
+[role='menu'][data-state] {
+  max-width: min(92vw, 860px);
+}
+
+[role='menu'] select {
+  font-family: inherit;
+  color: #374151; /* gray-700 */
+}
