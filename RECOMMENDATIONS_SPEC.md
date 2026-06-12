@@ -144,7 +144,7 @@ This means one rule can emit 1 to 6 rows. With rich data the engine produces rou
 
 ---
 
-## 4. Recommendation Rules (16 rule blocks)
+## 4. Recommendation Rules (19 rule blocks)
 
 All rules read the normalized snapshot. `overallVis` = `visibility.score`. `zeroPrompts` = prompts with `averageScore === 0`. `lowPrompts` = prompts with `0 < averageScore < 5`. `totalCitations` = sum of all `sources[].mentions`. `activeProviders()` = providers with per-model visibility data, else providers seen in source/prompt model lists, else all 5.
 
@@ -166,6 +166,9 @@ All rules read the normalized snapshot. `overallVis` = `visibility.score`. `zero
 | 14 | `td-google-ai` | Google AIO / AI Mode visibility (min of the two present) < `chatgptVis * 0.55` AND `chatgptVis > 0` (requires `latest_by_provider`) | medium | Med | technical-seo / on-page | "Improve visibility on Google AI: only {x}% vs {y}% on ChatGPT" | `latest_by_provider` for googleaio/googleaimode/chatgpt, `sources_by_provider.googleaio` | parent (3 steps) + 2 children (backlinks from AIO-cited domains, "best [category]" guide) |
 | 15 | `td-original-data` | No research/study/report URL pattern in `top_source_urls` OR `overallVis < 12` | medium | High | content / on-page | "Publish an original data study: research reports are the highest-cited content type across all AI models" | `top_source_urls` (URL regex), `top_sources` | 1 suggestion, folded |
 | 16 | `td-press` | At least 1 tech-media domain (techcrunch, forbes, theverge, wired, venturebeat, ... 18-entry pattern list) in `top_sources` AND `overallVis < 20` | medium | High | backlinks / off-page | "Get {brand} covered in tech media: {domains} already drive AI citations in your space" | `top_sources` filtered by news domain patterns | 1 suggestion, folded |
+| 17 | `td-youtube` | YouTube (`youtube.com` / `m.youtube.com` / `youtu.be`, combined via `youtubeStats`) in `top_sources` with combined `citation_count >= 2` | high if YouTube ranks in the top 5 sources by citations, else medium | High | youtube / off-page | "Create video content for the topics AI already answers with YouTube" | `top_sources` (YouTube citations, share of total, providers citing it), `prompt_metrics` topics | none. `aiTargets` = providers citing YouTube, fallback `activeProviders()` |
+| 18 | `td-social` | Combined `citation_count >= 2` across social domains in `top_sources` (linkedin.com, x.com, twitter.com, facebook.com, instagram.com, tiktok.com, quora.com, medium.com, threads.net; reddit.com and YouTube excluded, they have their own rules; via `socialSourceStats`) | high if combined social citations >= 5, else medium | Med | social-media / off-page | "Build a presence on {top platform}, which AI models cite in your category" | per-platform citation counts, combined social share, providers citing social content | single platform: none (platform steps on the parent). 2+ platforms: parent (3 steps) + 1 child per platform (max 4) with platform-appropriate steps (Quora answers, LinkedIn expert posts, Medium articles, X threads, generic) |
+| 19 | `td-crawl` | `brand_domain` non-empty AND not cited in `top_sources` (no entry for the domain or any subdomain with `citation_count > 0`, via `brandCitedInSources`) AND `top_sources.length >= 3` | high | Low | crawlability / on-page | "Make {brand domain} accessible and citable for AI crawlers" | `top_sources` (count of cited domains, top 3 domains), `brand_domain` | none. Steps: robots.txt AI-crawler allowlist (GPTBot/PerplexityBot/Google-Extended/ClaudeBot), llms.txt, server-side rendering, structured data, Bing index check |
 
 **Fallback (`td-no-data`)**: if zero rules fire (empty snapshot, brand never analyzed), a single medium-priority todo is emitted telling the user to run an analysis. The UI never renders an empty table.
 
@@ -183,7 +186,7 @@ GET /brands/:id/recommendations?time_range=30d
 ```
 
 - **Input**: exactly the data the backend already has for the snapshot + prompts endpoints, plus per-model visibility/sentiment/position and the competitor heatmap (unlocking rules 4, 10, 14).
-- **Implementation path**: port `normalizeSnapshot()` and `aimGenerateTodos()` from `todos.js` to the backend language. Both are pure functions with no DOM or network dependencies, and the existing unit tests (`tests/todos.logic.test.mjs`, 16 tests) define the expected behavior and translate directly into backend test cases.
+- **Implementation path**: port `normalizeSnapshot()` and `aimGenerateTodos()` from `todos.js` to the backend language. Both are pure functions with no DOM or network dependencies, and the existing unit tests (`tests/todos.logic.test.mjs`, 44 tests) define the expected behavior and translate directly into backend test cases.
 - **Advantages**:
   - One maintainable home for the rule logic; new rules ship without a frontend deploy
   - Server-side caching per brand + time range (the output only changes when an analysis runs, so cache until next analysis)
@@ -312,7 +315,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 |---|---|
 | `live-app/views/todos.js` | Full implementation: CSS, normalization, rule engine, UI, view registration, `window.PBTodosLogic` export |
 | `live-app/assets/api.js` | API client (`window.PBApi`): endpoint paths, envelope handling, error type |
-| `live-app/tests/todos.logic.test.mjs` | 16 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
+| `live-app/tests/todos.logic.test.mjs` | 44 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion, weekly cache, merge, YouTube/social/crawlability triggers). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
 | `live-app/index.html` | SPA shell: sidebar nav item (`href="#/todos"`) and `<script src="/views/todos.js">` wiring |
 | `live-app/proxy_server.py` | Local proxy that maps `/api/*` to the real REST API with the key attached |
 
@@ -359,6 +362,6 @@ An accent CTA in the table filter row opens a dropdown with the six user-facing 
 4. Writes the merged set back into the weekly cache **without changing `generatedAt`**, so on-demand generation does not reset the weekly window.
 5. Toasts the result count, or a "no new recommendations right now" message when the engine produced nothing new for that type.
 
-**Honest limitation:** the engine is deterministic, so re-running it against unchanged data yields the same ids and the merge adds nothing. New recommendations only appear when the underlying API data has changed since the weekly set was generated (new citations, prompt movement, competitor shifts). In practice the button is most useful mid-week after new analysis runs. Note also that the engine currently emits no todos with `recType` `social-media`, `youtube`, or `crawlability` (no rules target them yet), so those options will always toast zero until rules or an LLM generator exist for them.
+**Honest limitation:** the engine is deterministic, so re-running it against unchanged data yields the same ids and the merge adds nothing. New recommendations only appear when the underlying API data has changed since the weekly set was generated (new citations, prompt movement, competitor shifts). In practice the button is most useful mid-week after new analysis runs. All six dropdown categories are now backed by rules (rules 17-19 cover `youtube`, `social-media`, and `crawlability`), but each rule still only fires when its data trigger is met, so a category can legitimately toast zero for a given brand (e.g. no YouTube citations in its sources, or its own site is already being cited).
 
 **Production:** this is the natural seam for an LLM-backed generator. Route the selected category to a per-category generation prompt (with the same snapshot data as context), validate the response against the todo schema, and dedupe server-side against the stored set by id or semantic similarity. The deterministic engine can remain as the guaranteed-coverage baseline.

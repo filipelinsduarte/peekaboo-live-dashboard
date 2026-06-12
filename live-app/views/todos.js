@@ -1477,6 +1477,73 @@
     return out;
   }
 
+  // ── Pure trigger helpers for the YouTube / Social / Crawlability rules ─────
+  // All three take the normalized top_sources array (domain, citation_count,
+  // providers) and are exposed on window.PBTodosLogic for unit testing.
+
+  var YOUTUBE_SOURCE_DOMAINS = ['youtube.com', 'm.youtube.com', 'youtu.be'];
+
+  // Aggregate YouTube citation data across its domain variants.
+  // rank = best (lowest) 0-based index among top_sources, -1 when absent.
+  function youtubeStats(topSources) {
+    var list = Array.isArray(topSources) ? topSources : [];
+    var citations = 0;
+    var providers = [];
+    var rank = -1;
+    list.forEach(function (s, i) {
+      if (!s || !s.domain) return;
+      if (YOUTUBE_SOURCE_DOMAINS.indexOf(s.domain) === -1) return;
+      citations += Number(s.citation_count) || 0;
+      (s.providers || []).forEach(function (p) { if (providers.indexOf(p) === -1) providers.push(p); });
+      if (rank === -1 || i < rank) rank = i;
+    });
+    return { citations: citations, providers: providers, rank: rank };
+  }
+
+  // Social platforms with their own dedicated rule are deliberately excluded:
+  // reddit.com (td-reddit) and the YouTube domains (td-youtube).
+  var SOCIAL_SOURCE_DOMAINS = ['linkedin.com', 'x.com', 'twitter.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'quora.com', 'medium.com', 'threads.net'];
+  var SOCIAL_PLATFORM_LABELS = {
+    'linkedin.com': 'LinkedIn', 'x.com': 'X', 'twitter.com': 'X (Twitter)',
+    'facebook.com': 'Facebook', 'instagram.com': 'Instagram', 'tiktok.com': 'TikTok',
+    'quora.com': 'Quora', 'medium.com': 'Medium', 'threads.net': 'Threads'
+  };
+  function socialPlatformLabel(domain) {
+    return SOCIAL_PLATFORM_LABELS[domain] || domain;
+  }
+
+  // Aggregate social-platform citations: per-platform breakdown (sorted desc),
+  // combined total, and the union of providers citing any social platform.
+  function socialSourceStats(topSources) {
+    var list = Array.isArray(topSources) ? topSources : [];
+    var platforms = [];
+    var total = 0;
+    var providers = [];
+    list.forEach(function (s) {
+      if (!s || !s.domain) return;
+      if (SOCIAL_SOURCE_DOMAINS.indexOf(s.domain) === -1) return;
+      var count = Number(s.citation_count) || 0;
+      total += count;
+      platforms.push({ domain: s.domain, label: socialPlatformLabel(s.domain), citation_count: count, providers: (s.providers || []).slice() });
+      (s.providers || []).forEach(function (p) { if (providers.indexOf(p) === -1) providers.push(p); });
+    });
+    platforms.sort(function (a, b) { return b.citation_count - a.citation_count; });
+    return { total: total, platforms: platforms, providers: providers };
+  }
+
+  // True when the brand's own domain (or a subdomain of it) appears in
+  // top_sources with at least 1 citation. Used by the crawlability rule.
+  function brandCitedInSources(topSources, brandDomain) {
+    var bd = String(brandDomain || '').replace(/^www\./, '').toLowerCase();
+    if (!bd) return false;
+    return (Array.isArray(topSources) ? topSources : []).some(function (s) {
+      if (!s || !s.domain) return false;
+      var d = String(s.domain).replace(/^www\./, '').toLowerCase();
+      if (d !== bd && d.slice(-(bd.length + 1)) !== '.' + bd) return false;
+      return (Number(s.citation_count) || 0) > 0;
+    });
+  }
+
   function normalizeSnapshot(snap, promptRows, brandName, brandUrl) {
     snap = snap || {};
     var vis = snap.visibility || {};
@@ -2133,6 +2200,181 @@
       }).forEach(function (t) { todos.push(t); });
     }
 
+    // ── 9b. YouTube presence ──────────────────────────────────────
+    var ytStats = youtubeStats(topSources);
+    if (ytStats.citations >= 2) {
+      var ytShare = totalCitations > 0 ? Math.round((ytStats.citations / totalCitations) * 100) : 0;
+      var ytProviders = ytStats.providers.length ? ytStats.providers : activeProviders();
+      var ytProvNames = ytStats.providers.map(function (p) { return provLabels[p]; }).filter(Boolean);
+      var ytTopicGroups = {};
+      prompts.forEach(function (p) { var t = p.topic || 'General'; ytTopicGroups[t] = (ytTopicGroups[t] || 0) + 1; });
+      var ytTopicNames = Object.keys(ytTopicGroups).sort(function (a, b) { return ytTopicGroups[b] - ytTopicGroups[a]; }).slice(0, 3);
+      _aimExpandTodo({
+        id: 'td-youtube',
+        priority: (ytStats.rank > -1 && ytStats.rank < 5) ? 'high' : 'medium',
+        effort: 'High effort',
+        pageType: 'off-page',
+        recType: 'youtube',
+        aiTargets: ytProviders,
+        title: 'Create video content for the topics AI already answers with YouTube',
+        signals: [
+          'youtube.com appears in ' + ytStats.citations + ' monitored AI responses across your tracked prompts',
+          'YouTube accounts for ' + ytShare + '% of all AI citations in your space' + (ytStats.rank > -1 ? ' (citation source #' + (ytStats.rank + 1) + ')' : ''),
+          ytProvNames.length ? ytProvNames.join(', ') + (ytProvNames.length > 1 ? ' are' : ' is') + ' citing YouTube videos when answering prompts in your category' : 'AI models cite YouTube videos when answering prompts in your category'
+        ],
+        sigs_fav: ['youtube.com', 'youtube.com', ytStats.providers.length ? provDomains[ytStats.providers[0]] : null],
+        sigs_expand: [
+          { heading: 'YouTube vs other top citation domains (' + _periodLabel + '):', items: topSources.slice(0, 5).map(function (s) { return s.domain + ': ' + s.citation_count + ' citations' + (YOUTUBE_SOURCE_DOMAINS.indexOf(s.domain) > -1 ? ' (YouTube)' : ''); }) },
+          ytTopicNames.length ? { heading: 'Topic clusters to cover first (most tracked prompts):', items: ytTopicNames.map(function (t) { return t + ': ' + ytTopicGroups[t] + ' tracked prompts'; }) } : null,
+          null
+        ],
+        reasoning: 'AI models cited YouTube ' + ytStats.citations + ' times when answering your tracked prompts. The videos being cited are not yours. Every one of those citations is a slot ' + brand + ' could hold with its own videos answering the same questions. Video is also one of the few citation sources where you control the entire asset: the title, the description, and the answer itself.',
+        steps: [
+          'Pull the tracked prompts with the highest AI activity and group them by topic to build a video shortlist',
+          'Script each video to answer one prompt directly in the first 30 seconds, then expand with detail and proof',
+          'Match video titles and descriptions to the exact prompt phrasing buyers use, not internal product language',
+          'Add chapter markers and a full written summary in the description so AI can parse the answer without transcribing',
+          'Embed each video on the matching page of your site to link the video and page citations together'
+        ],
+        suggestions: [],
+        exampleDomains: ['youtube.com'],
+        examplesHeading: 'YouTube content AI already cites in your category',
+        examplesNote: 'These videos hold the citations today. Cover the same questions with better, more direct answers.',
+        outcome: 'A well-targeted video series typically starts earning AI citations within 30-60 days of indexing, and each video keeps citing for as long as it stays the best answer.',
+        platDomains: ['youtube.com'].concat(topSources.slice(0, 2).map(function (s) { return s.domain; })),
+        brands: [{ domain: 'youtube.com', label: 'YouTube' }]
+      }).forEach(function (t) { todos.push(t); });
+    }
+
+    // ── 9c. Social platform presence ──────────────────────────────
+    var socStats = socialSourceStats(topSources);
+    if (socStats.total >= 2) {
+      var socShare = totalCitations > 0 ? Math.round((socStats.total / totalCitations) * 100) : 0;
+      var socTop = socStats.platforms[0];
+      var socProviders = socStats.providers.length ? socStats.providers : activeProviders();
+      var socProvNames = socStats.providers.map(function (p) { return provLabels[p]; }).filter(Boolean);
+      var socBreakdown = socStats.platforms.map(function (p) { return p.label + ': ' + p.citation_count + ' citation' + (p.citation_count === 1 ? '' : 's'); });
+
+      // Platform-appropriate execution plan, used for single-platform steps
+      // and for the per-platform suggestion children.
+      function socialPlatformPlan(plat) {
+        if (plat.domain === 'quora.com') {
+          return {
+            title: 'Answer the high-intent Quora questions AI already cites in your category',
+            steps: [
+              'Search Quora for the questions that match your tracked prompts and sort by views and follower count',
+              'Write direct, complete answers that solve the question first and mention ' + brand + ' only where it is genuinely the right fit',
+              'Link each answer to the matching page on your site so AI connects the answer to a citable source',
+              'Revisit top answers quarterly: Quora resurfaces updated answers and AI re-indexes them'
+            ],
+            signals: [
+              'Quora appears in ' + plat.citation_count + ' monitored AI responses in your space',
+              'Quora answers rank for question-format queries, the same format buyers use when asking AI',
+              'A single well-written answer on a high-traffic question keeps earning AI citations for months'
+            ]
+          };
+        }
+        if (plat.domain === 'linkedin.com') {
+          return {
+            title: 'Publish expert LinkedIn posts on the topics AI cites in your category',
+            steps: [
+              'Map your tracked prompt topics to a weekly posting calendar for your founder or subject-matter experts',
+              'Write posts that take a clear position and include a concrete data point or example AI can extract',
+              'Publish long-form LinkedIn articles for the deepest topics: articles are indexed and cited more than feed posts',
+              'Engage in comments on posts from category voices AI already cites to build profile authority'
+            ],
+            signals: [
+              'LinkedIn appears in ' + plat.citation_count + ' monitored AI responses in your space',
+              'LinkedIn articles and expert posts are indexed as authoritative professional content by AI models',
+              'Consistent expert posting builds an author profile AI associates with your category'
+            ]
+          };
+        }
+        if (plat.domain === 'medium.com') {
+          return {
+            title: 'Publish in-depth Medium articles targeting the prompts AI answers with Medium content',
+            steps: [
+              'Identify which of your tracked prompts AI currently answers with Medium articles',
+              'Write a deeper, more current article for each, with the prompt phrasing in the title or opening',
+              'Publish under a named expert profile and submit to the relevant Medium publications for distribution',
+              'Cross-link each article to the matching page on your site'
+            ],
+            signals: [
+              'Medium appears in ' + plat.citation_count + ' monitored AI responses in your space',
+              'Medium articles are fully crawlable long-form content AI models cite readily',
+              'Publication placement multiplies reach and citation likelihood'
+            ]
+          };
+        }
+        if (plat.domain === 'x.com' || plat.domain === 'twitter.com') {
+          return {
+            title: 'Build an expert presence on X around the topics AI cites in your category',
+            steps: [
+              'Post threads that fully answer your tracked prompts: threads are indexed as long-form content',
+              'Lead each thread with the question phrasing buyers use, then a direct answer in the first post',
+              'Reply with substance in conversations started by category voices AI already cites',
+              'Pin your strongest answer thread so it anchors the profile AI crawls'
+            ],
+            signals: [
+              plat.label + ' appears in ' + plat.citation_count + ' monitored AI responses in your space',
+              'X threads from credible accounts are cited by AI for fast-moving and opinion-led topics',
+              'Profile authority compounds: consistent expert threads make every future post more citable'
+            ]
+          };
+        }
+        return {
+          title: 'Build a consistent ' + plat.label + ' presence around the topics AI cites in your category',
+          steps: [
+            'Identify which of your tracked prompts AI currently answers with ' + plat.label + ' content',
+            'Publish content on ' + plat.label + ' that answers those prompts directly, in the format the platform favors',
+            'Keep a public, crawlable profile with your category positioning and a link to your site',
+            'Post on a steady cadence: recency and consistency both feed how AI weighs platform content'
+          ],
+          signals: [
+            plat.label + ' appears in ' + plat.citation_count + ' monitored AI responses in your space',
+            'AI models index public ' + plat.label + ' content when answering prompts in your category',
+            'A consistent presence turns the platform into a citation source you influence directly'
+          ]
+        };
+      }
+
+      var socIsMulti = socStats.platforms.length > 1;
+      var socSinglePlan = socIsMulti ? null : socialPlatformPlan(socTop);
+      _aimExpandTodo({
+        id: 'td-social',
+        priority: socStats.total >= 5 ? 'high' : 'medium',
+        effort: 'Med effort',
+        pageType: 'off-page',
+        recType: 'social-media',
+        aiTargets: socProviders,
+        title: 'Build a presence on ' + socTop.label + ', which AI models cite in your category',
+        signals: [
+          socTop.label + ' appears in ' + socTop.citation_count + ' monitored AI responses across your tracked prompts',
+          'Social platforms account for ' + socStats.total + ' AI citations combined (' + socShare + '% of all citations in your space)',
+          socProvNames.length ? socProvNames.join(', ') + (socProvNames.length > 1 ? ' are' : ' is') + ' citing social content when answering prompts in your category' : 'AI models cite social content when answering prompts in your category'
+        ],
+        sigs_fav: [socTop.domain, socStats.platforms[1] ? socStats.platforms[1].domain : socTop.domain, socStats.providers.length ? provDomains[socStats.providers[0]] : null],
+        sigs_expand: [
+          { heading: 'AI citations by social platform (' + _periodLabel + '):', items: socBreakdown },
+          { heading: 'Social vs other top citation domains:', items: topSources.slice(0, 5).map(function (s) { return s.domain + ': ' + s.citation_count + ' citations' + (SOCIAL_SOURCE_DOMAINS.indexOf(s.domain) > -1 ? ' (social)' : ''); }) },
+          null
+        ],
+        reasoning: 'AI models cited social platforms ' + socStats.total + ' times when answering your tracked prompts, led by ' + socTop.label + '. That content is shaping what AI says in your category, and ' + brand + ' is not the one publishing it. Unlike editorial coverage, social presence is fully in your control: you choose the topics, the framing, and the cadence.',
+        steps: socIsMulti ? [
+          'Prioritize the platforms by citation count: start with ' + socTop.label + ', it carries the most AI citations today',
+          'Map your tracked prompt topics to a per-platform content calendar so every post targets a query AI actually answers',
+          'Keep every profile public and crawlable: private or login-gated content is invisible to AI models'
+        ] : socSinglePlan.steps,
+        suggestions: socIsMulti ? socStats.platforms.slice(0, 4).map(function (p) { return socialPlatformPlan(p); }) : [],
+        exampleDomains: socStats.platforms.slice(0, 3).map(function (p) { return p.domain; }),
+        examplesHeading: 'Social content AI already cites in your category',
+        examplesNote: 'These platforms are feeding AI answers today. Publishing there puts ' + brand + ' inside the same citation pipeline.',
+        outcome: 'Platform content from an active, credible profile typically starts appearing in AI citations within 30-60 days, and the profile authority compounds with every post.',
+        platDomains: socStats.platforms.map(function (p) { return p.domain; }),
+        brands: socStats.platforms.slice(0, 2).map(function (p) { return { domain: p.domain, label: p.label }; })
+      }).forEach(function (t) { todos.push(t); });
+    }
+
     // ── 10. Brand sentiment below neutral ─────────────────────────
     var brandSentVals = activeProviders().map(function (p) {
       return latByProv[p] && latByProv[p].sentiment != null ? latByProv[p].sentiment : null;
@@ -2684,6 +2926,52 @@
       }).forEach(function (t) { todos.push(t); });
     }
 
+    // ── 17. Brand site never cited: AI crawlability ────────────────
+    var crawlBrandDom = snap.brand_domain || '';
+    if (crawlBrandDom && topSources.length >= 3 && !brandCitedInSources(topSources, crawlBrandDom)) {
+      var crawlTop3 = topSources.slice(0, 3).map(function (s) { return s.domain; });
+      _aimExpandTodo({
+        id: 'td-crawl',
+        priority: 'high',
+        effort: 'Low effort',
+        pageType: 'on-page',
+        recType: 'crawlability',
+        aiTargets: activeProviders(),
+        title: 'Make ' + crawlBrandDom + ' accessible and citable for AI crawlers',
+        signals: [
+          'AI models cite ' + topSources.length + ' different domains in your category but never ' + crawlBrandDom,
+          'Top cited domains right now: ' + crawlTop3.join(', '),
+          'Zero citations of your own site means AI answers category questions entirely from third-party sources'
+        ],
+        sigs_fav: [crawlBrandDom, topSources[0].domain, null],
+        sigs_expand: [
+          { heading: 'Domains AI cites instead of ' + crawlBrandDom + ':', items: topSources.slice(0, 6).map(function (s, i) { return '#' + (i + 1) + ' ' + s.domain + ': ' + s.citation_count + ' citations'; }) },
+          { heading: 'AI crawlers to verify in robots.txt:', items: [
+            'GPTBot (ChatGPT)',
+            'PerplexityBot (Perplexity)',
+            'Google-Extended (Gemini and Google AI)',
+            'ClaudeBot (Claude)'
+          ] },
+          null
+        ],
+        reasoning: 'AI models cite ' + topSources.length + ' different domains when answering your category prompts, and ' + crawlBrandDom + ' is not one of them. Before any content investment can pay off, the site itself has to be crawlable and parseable by AI systems. A blocked crawler, JavaScript-only rendering, or missing structured data can keep an otherwise strong site out of every AI answer. These checks are quick to run and unblock everything else.',
+        steps: [
+          'Verify robots.txt allows GPTBot, PerplexityBot, Google-Extended, and ClaudeBot: a single disallow rule can block all AI citations',
+          'Add an llms.txt file describing your key pages and what ' + crawlBrandDom + ' is, so AI crawlers get a clean site summary',
+          'Ensure key pages render server-side: content that only appears after JavaScript runs is invisible to most AI crawlers',
+          'Add structured data to your key pages: Organization, Product, and FAQPage schema give AI parseable facts to cite',
+          'Check that ' + crawlBrandDom + ' appears in the Bing index: ChatGPT browsing pulls from Bing, so absence there means absence from ChatGPT answers'
+        ],
+        suggestions: [],
+        exampleDomains: crawlTop3,
+        examplesHeading: 'Domains AI cites in your category today',
+        examplesNote: 'These sites are crawlable, parseable, and indexed. Matching their technical accessibility is the precondition for ' + crawlBrandDom + ' joining them.',
+        outcome: 'Crawlability fixes remove the ceiling on every other recommendation: once AI systems can read and parse the site, content and citation work starts converting into first-party citations.',
+        platDomains: crawlTop3,
+        brands: [{ domain: crawlBrandDom, label: brand }]
+      }).forEach(function (t) { todos.push(t); });
+    }
+
     // ── Fallback ──────────────────────────────────────────────────
     if (todos.length === 0) {
       todos.push({
@@ -3090,6 +3378,9 @@
     cleanDomain: cleanDomain,
     modelIdToProv: modelIdToProv,
     splitMentions: splitMentions,
+    youtubeStats: youtubeStats,
+    socialSourceStats: socialSourceStats,
+    brandCitedInSources: brandCitedInSources,
     normalizeSnapshot: normalizeSnapshot,
     expandTodo: _aimExpandTodo,
     weeklyCacheState: weeklyCacheState,

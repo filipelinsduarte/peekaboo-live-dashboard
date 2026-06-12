@@ -344,5 +344,265 @@ test('mergeNewTodos handles non-array and malformed inputs defensively', () => {
   assert.equal(out2.addedCount, 0, 'todos without an id are skipped');
 });
 
+// ── youtubeStats ─────────────────────────────────────────────────────────────
+test('youtubeStats aggregates citations across YouTube domain variants', () => {
+  const out = L.youtubeStats([
+    { domain: 'g2.com', citation_count: 12, providers: ['chatgpt'] },
+    { domain: 'youtube.com', citation_count: 4, providers: ['chatgpt', 'gemini'] },
+    { domain: 'youtu.be', citation_count: 2, providers: ['perplexity'] },
+  ]);
+  assert.equal(out.citations, 6, 'youtube.com + youtu.be combined');
+  assert.deepEqual(Array.from(out.providers).sort(), ['chatgpt', 'gemini', 'perplexity']);
+  assert.equal(out.rank, 1, 'best (lowest) index among the variants');
+});
+
+test('youtubeStats returns zero/empty when YouTube is absent', () => {
+  const out = L.youtubeStats([{ domain: 'g2.com', citation_count: 12, providers: [] }]);
+  assert.equal(out.citations, 0);
+  assert.equal(out.rank, -1);
+  assert.equal(out.providers.length, 0);
+  const empty = L.youtubeStats(null);
+  assert.equal(empty.citations, 0, 'defensive on non-array input');
+});
+
+// ── socialSourceStats ────────────────────────────────────────────────────────
+test('socialSourceStats sums social platforms and sorts them by citations desc', () => {
+  const out = L.socialSourceStats([
+    { domain: 'quora.com', citation_count: 2, providers: ['perplexity'] },
+    { domain: 'g2.com', citation_count: 12, providers: ['chatgpt'] },
+    { domain: 'linkedin.com', citation_count: 4, providers: ['chatgpt'] },
+  ]);
+  assert.equal(out.total, 6);
+  assert.equal(out.platforms.length, 2);
+  assert.equal(out.platforms[0].domain, 'linkedin.com', 'sorted desc by citation_count');
+  assert.equal(out.platforms[0].label, 'LinkedIn');
+  assert.deepEqual(Array.from(out.providers).sort(), ['chatgpt', 'perplexity']);
+});
+
+test('socialSourceStats excludes reddit.com and YouTube (they have their own rules)', () => {
+  const out = L.socialSourceStats([
+    { domain: 'reddit.com', citation_count: 10, providers: ['chatgpt'] },
+    { domain: 'youtube.com', citation_count: 8, providers: ['chatgpt'] },
+    { domain: 'youtu.be', citation_count: 3, providers: ['chatgpt'] },
+  ]);
+  assert.equal(out.total, 0);
+  assert.equal(out.platforms.length, 0);
+});
+
+// ── brandCitedInSources ──────────────────────────────────────────────────────
+test('brandCitedInSources detects the brand domain and its subdomains', () => {
+  const srcs = [
+    { domain: 'g2.com', citation_count: 10 },
+    { domain: 'blog.acme.com', citation_count: 2 },
+  ];
+  assert.equal(L.brandCitedInSources(srcs, 'acme.com'), true, 'subdomain counts as the brand site');
+  assert.equal(L.brandCitedInSources([{ domain: 'acme.com', citation_count: 5 }], 'acme.com'), true);
+  assert.equal(L.brandCitedInSources(srcs, 'other.com'), false);
+  assert.equal(L.brandCitedInSources([{ domain: 'notacme.com', citation_count: 5 }], 'acme.com'), false, 'suffix match must respect the dot boundary');
+});
+
+test('brandCitedInSources treats zero-citation entries and empty domains as not cited', () => {
+  assert.equal(L.brandCitedInSources([{ domain: 'acme.com', citation_count: 0 }], 'acme.com'), false);
+  assert.equal(L.brandCitedInSources([{ domain: 'acme.com', citation_count: 5 }], ''), false);
+  assert.equal(L.brandCitedInSources(null, 'acme.com'), false);
+});
+
+// ── new rules: shared fixture ────────────────────────────────────────────────
+// Brand site is NOT among the sources, YouTube has 6 citations (source #2 of
+// 5), and two social platforms total 6 citations -> all three new rules fire.
+const richSnap = {
+  brand: { name: 'Acme' },
+  visibility: { score: 8, rank: 3, totalChatsAnalyzed: 50 },
+  sources: [
+    { domain: 'g2.com', mentions: 12, aiModels: ['gpt-4o-mini'] },
+    { domain: 'youtube.com', mentions: 6, aiModels: ['gpt-4o-mini', 'gemini-2.0-flash'] },
+    { domain: 'reddit.com', mentions: 5, aiModels: ['gpt-4o-mini'] },
+    { domain: 'linkedin.com', mentions: 4, aiModels: ['gpt-4o-mini'] },
+    { domain: 'quora.com', mentions: 2, aiModels: ['sonar-pro'] },
+  ],
+  competitors: [],
+};
+
+// ── td-youtube ───────────────────────────────────────────────────────────────
+test('generateTodos emits the YouTube todo when youtube.com has >= 2 citations', () => {
+  const todos = L.generateTodos(richSnap, [], 'Acme', 'https://acme.com');
+  const yt = todos.find((t) => t.id === 'td-youtube');
+  assert.ok(yt, 'td-youtube should exist (6 youtube citations)');
+  assert.equal(yt.recType, 'youtube');
+  assert.equal(yt.pageType, 'off-page');
+  assert.equal(yt.effort, 'High effort');
+  assert.equal(yt.priority, 'high', 'youtube is the #2 citation source, inside the top 5');
+  assert.ok(yt.signals[0].includes('6 monitored AI responses'), 'carries the citation count, got: ' + yt.signals[0]);
+  // share = round(6/29*100) = 21
+  assert.ok(yt.signals[1].includes('21%'), 'carries the citation share, got: ' + yt.signals[1]);
+  assert.ok(yt.signals[2].includes('ChatGPT') && yt.signals[2].includes('Gemini'), 'names the providers citing YouTube, got: ' + yt.signals[2]);
+  assert.deepEqual(Array.from(yt.aiTargets).sort(), ['chatgpt', 'gemini'], 'targets derive from the providers citing youtube');
+});
+
+test('generateTodos skips the YouTube todo below the 2-citation threshold', () => {
+  const snap = {
+    visibility: { score: 8 },
+    sources: [
+      { domain: 'g2.com', mentions: 12, aiModels: ['gpt-4o-mini'] },
+      { domain: 'youtube.com', mentions: 1, aiModels: ['gpt-4o-mini'] },
+    ],
+  };
+  const todos = L.generateTodos(snap, [], 'Acme', '');
+  assert.ok(!todos.find((t) => t.id === 'td-youtube'), '1 citation is below the >= 2 threshold');
+});
+
+test('generateTodos YouTube todo is medium priority when outside the top 5 sources', () => {
+  const snap = {
+    visibility: { score: 8 },
+    sources: [
+      { domain: 'a.com', mentions: 50 }, { domain: 'b.com', mentions: 40 },
+      { domain: 'c.com', mentions: 30 }, { domain: 'd.com', mentions: 20 },
+      { domain: 'e.com', mentions: 10 },
+      { domain: 'youtube.com', mentions: 2, aiModels: ['gpt-4o-mini'] },
+    ],
+  };
+  const todos = L.generateTodos(snap, [], 'Acme', '');
+  const yt = todos.find((t) => t.id === 'td-youtube');
+  assert.ok(yt, 'still fires at exactly 2 citations');
+  assert.equal(yt.priority, 'medium', 'rank 6 is outside the top 5');
+});
+
+// ── td-social ────────────────────────────────────────────────────────────────
+test('generateTodos emits the social todo naming the top platform, with one child per platform', () => {
+  const todos = L.generateTodos(richSnap, [], 'Acme', 'https://acme.com');
+  const soc = todos.find((t) => t.id === 'td-social');
+  assert.ok(soc, 'td-social should exist (linkedin 4 + quora 2 = 6 >= 2)');
+  assert.equal(soc.recType, 'social-media');
+  assert.equal(soc.pageType, 'off-page');
+  assert.equal(soc.effort, 'Med effort');
+  assert.equal(soc.priority, 'high', 'combined 6 social citations >= 5');
+  assert.ok(soc.title.includes('LinkedIn'), 'title names the top platform, got: ' + soc.title);
+  assert.ok(soc.signals[1].includes('6 AI citations'), 'carries the combined count, got: ' + soc.signals[1]);
+  // multi-platform -> suggestion children, one per platform
+  const kids = todos.filter((t) => t._groupId === 'td-social');
+  assert.equal(kids.length, 2, 'one child per qualifying platform');
+  assert.ok(kids[0].title.includes('LinkedIn'), 'first child targets the top platform');
+  assert.ok(kids[1].title.includes('Quora'), 'second child targets Quora');
+  kids.forEach((k) => assert.ok(k.steps.length > 0, 'children carry their own platform steps'));
+});
+
+test('generateTodos social todo handles a single qualifying platform without children', () => {
+  const snap = {
+    visibility: { score: 8 },
+    sources: [
+      { domain: 'g2.com', mentions: 12 },
+      { domain: 'quora.com', mentions: 3, aiModels: ['sonar-pro'] },
+    ],
+  };
+  const todos = L.generateTodos(snap, [], 'Acme', '');
+  const soc = todos.find((t) => t.id === 'td-social');
+  assert.ok(soc, 'fires with one platform at 3 citations');
+  assert.equal(soc.priority, 'medium', '3 combined citations is below the >= 5 high threshold');
+  assert.ok(soc.title.includes('Quora'));
+  assert.ok(soc.steps.length > 0, 'single-platform steps live on the parent');
+  assert.ok(!todos.find((t) => t._groupId === 'td-social'), 'no children for a single platform');
+});
+
+test('generateTodos skips the social todo when only Reddit/YouTube are present', () => {
+  const snap = {
+    visibility: { score: 8 },
+    sources: [
+      { domain: 'reddit.com', mentions: 10, aiModels: ['gpt-4o-mini'] },
+      { domain: 'youtube.com', mentions: 8, aiModels: ['gpt-4o-mini'] },
+    ],
+  };
+  const todos = L.generateTodos(snap, [], 'Acme', '');
+  assert.ok(!todos.find((t) => t.id === 'td-social'), 'reddit/youtube are excluded from the social rule');
+  assert.ok(todos.find((t) => t.id === 'td-reddit'), 'reddit still gets its own rule');
+  assert.ok(todos.find((t) => t.id === 'td-youtube'), 'youtube still gets its own rule');
+});
+
+test('generateTodos skips the social todo below the combined 2-citation threshold', () => {
+  const snap = {
+    visibility: { score: 8 },
+    sources: [
+      { domain: 'g2.com', mentions: 12 },
+      { domain: 'linkedin.com', mentions: 1 },
+    ],
+  };
+  const todos = L.generateTodos(snap, [], 'Acme', '');
+  assert.ok(!todos.find((t) => t.id === 'td-social'), '1 combined citation is below the >= 2 threshold');
+});
+
+// ── td-crawl ─────────────────────────────────────────────────────────────────
+test('generateTodos emits the crawlability todo when the brand site is never cited', () => {
+  const todos = L.generateTodos(richSnap, [], 'Acme', 'https://acme.com');
+  const crawl = todos.find((t) => t.id === 'td-crawl');
+  assert.ok(crawl, 'td-crawl should exist (5 sources cited, acme.com not among them)');
+  assert.equal(crawl.recType, 'crawlability');
+  assert.equal(crawl.pageType, 'on-page');
+  assert.equal(crawl.priority, 'high');
+  assert.equal(crawl.effort, 'Low effort');
+  assert.ok(crawl.title.includes('acme.com'), 'title names the brand domain, got: ' + crawl.title);
+  assert.ok(crawl.signals[0].includes('5 different domains'), 'counts the cited domains, got: ' + crawl.signals[0]);
+  assert.ok(crawl.signals[1].includes('g2.com'), 'names the top cited domains, got: ' + crawl.signals[1]);
+  assert.ok(crawl.steps.some((s) => s.includes('robots.txt')), 'steps cover robots.txt');
+  assert.ok(crawl.steps.some((s) => s.includes('llms.txt')), 'steps cover llms.txt');
+  assert.ok(crawl.steps.some((s) => s.includes('Bing')), 'steps cover the Bing index check');
+});
+
+test('generateTodos skips the crawlability todo when the brand site is already cited', () => {
+  // liveSnap has acme.com with 30 citations
+  const todos = L.generateTodos(liveSnap, livePromptRows, 'Acme', 'https://acme.com');
+  assert.ok(!todos.find((t) => t.id === 'td-crawl'), 'brand domain is cited -> rule must not fire');
+});
+
+test('generateTodos skips the crawlability todo without a brand domain or with sparse sources', () => {
+  const noDomain = L.generateTodos(richSnap, [], 'Acme', '');
+  assert.ok(!noDomain.find((t) => t.id === 'td-crawl'), 'no brand domain -> no crawl todo');
+  const sparse = L.generateTodos({
+    visibility: { score: 8 },
+    sources: [{ domain: 'g2.com', mentions: 12 }, { domain: 'capterra.com', mentions: 4 }],
+  }, [], 'Acme', 'https://acme.com');
+  assert.ok(!sparse.find((t) => t.id === 'td-crawl'), 'fewer than 3 sources -> no crawl todo');
+});
+
+// ── schema completeness of the new rules ─────────────────────────────────────
+test('new-rule todos carry the full todo schema (parallel arrays, steps, valid enums)', () => {
+  const todos = L.generateTodos(richSnap, [], 'Acme', 'https://acme.com');
+  const fresh = todos.filter((t) => ['youtube', 'social-media', 'crawlability'].includes(t.recType));
+  assert.ok(fresh.length >= 4, 'parent rows for all three rules plus social children, got ' + fresh.length);
+  const validRecTypes = ['content', 'social-media', 'reddit', 'youtube', 'backlinks', 'crawlability', 'technical-seo'];
+  fresh.forEach((t) => {
+    assert.ok(t.id && typeof t.id === 'string', t.id + ': has a stable id');
+    assert.ok(t.title && typeof t.title === 'string', t.id + ': has a title');
+    assert.ok(['high', 'medium'].includes(t.priority), t.id + ': valid priority');
+    assert.ok(validRecTypes.includes(t.recType), t.id + ': valid recType');
+    assert.ok(['on-page', 'off-page'].includes(t.pageType), t.id + ': valid pageType');
+    assert.ok(/effort/i.test(t.effort), t.id + ': effort label present');
+    assert.ok(Array.isArray(t.aiTargets) && t.aiTargets.length > 0, t.id + ': aiTargets non-empty');
+    assert.ok(t.reasoning && t.reasoning.length > 40, t.id + ': has a reasoning paragraph');
+    assert.ok(Array.isArray(t.signals) && t.signals.length > 0, t.id + ': signals non-empty');
+    assert.equal(t.sigs_fav.length, t.signals.length, t.id + ': sigs_fav parallel to signals');
+    if (t.sigs_expand !== null) {
+      assert.equal(t.sigs_expand.length, t.signals.length, t.id + ': sigs_expand parallel to signals');
+    }
+    assert.ok(Array.isArray(t.steps) && t.steps.length > 0, t.id + ': steps non-empty');
+    assert.ok(!/—/.test(JSON.stringify(t)), t.id + ': no em dashes in any copy');
+  });
+});
+
+test('new-rule todos fall back to activeProviders when sources carry no aiModels', () => {
+  const snap = {
+    visibility: { score: 8 },
+    sources: [
+      { domain: 'g2.com', mentions: 12 },
+      { domain: 'youtube.com', mentions: 4 },
+      { domain: 'linkedin.com', mentions: 3 },
+    ],
+  };
+  const todos = L.generateTodos(snap, [], 'Acme', 'https://acme.com');
+  ['td-youtube', 'td-social', 'td-crawl'].forEach((id) => {
+    const t = todos.find((x) => x.id === id);
+    assert.ok(t, id + ' fires');
+    assert.ok(t.aiTargets.length > 0, id + ': aiTargets falls back to all providers');
+  });
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed > 0 ? 1 : 0);
