@@ -352,6 +352,34 @@
     return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
   }
 
+  // All unique cited domains in this prompt's payload: per-run sources[].domain
+  // across the history plus the aggregated sourceSummary[].domain. These are
+  // real domains the AI actually cited, so PB.entityDomain can conservatively
+  // match untracked entity names against them (exact normalized SLD equality;
+  // never a guess).
+  function collectCitedDomains(detail) {
+    var out = [];
+    var seen = {};
+    function add(domain) {
+      if (!domain) return;
+      var d = String(domain).trim().toLowerCase();
+      if (!d || seen[d]) return;
+      seen[d] = true;
+      out.push(d);
+    }
+    if (!detail) return out;
+    (Array.isArray(detail.history) ? detail.history : []).forEach(function (run) {
+      if (!run) return;
+      (Array.isArray(run.sources) ? run.sources : []).forEach(function (s) {
+        if (s) add(s.domain);
+      });
+    });
+    (Array.isArray(detail.sourceSummary) ? detail.sourceSummary : []).forEach(function (s) {
+      if (s) add(s.domain);
+    });
+    return out;
+  }
+
   window.PBPromptDetailLogic = {
     escapeHtml: escapeHtml,
     normalizeSpaces: normalizeSpaces,
@@ -365,6 +393,7 @@
     letterAvatarColor: letterAvatarColor,
     entityDomainMap: entityDomainMap,
     resolveEntityDomain: resolveEntityDomain,
+    collectCitedDomains: collectCitedDomains,
   };
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -377,6 +406,9 @@
   // modal (opened later from a row click) sees the same data.
   var competitorsCache = { brandId: null, list: null };
   var entityDomains = {};
+  // Cited domains of the current prompt (history sources + sourceSummary),
+  // step 2 of the resolution chain in mentionIcon. Reset per render.
+  var citedDomainList = [];
 
   // The brand's own record ({name, url, ...}) from PB.state.brands.
   function brandRecord(brandId) {
@@ -432,6 +464,7 @@
 
     var compList = await compPromise;
     entityDomains = entityDomainMap(brandRecord(brandId), compList || []);
+    citedDomainList = collectCitedDomains(detail);
 
     var history = detail.history || [];
     var groups = groupRunsByDate(history);
@@ -1047,13 +1080,18 @@
     return 'neutral';
   }
 
-  // Mention icon: real favicon when the entity name resolves (own brand or a
-  // tracked competitor in entityDomains), deterministic letter avatar
-  // otherwise. The img swaps itself for the letter avatar if the favicon
-  // fails to load. Domains are never constructed from names.
+  // Mention icon: real favicon when the entity name resolves through the
+  // shared chain (1. own brand / tracked competitor urls in entityDomains,
+  // 2. domains the AI actually cited for this prompt, 3. curated known-brand
+  // map via PB.entityDomain), deterministic letter avatar otherwise. The img
+  // swaps itself for the letter avatar if the favicon fails to load.
+  // Domains are never constructed from names.
   function mentionIcon(name, sz) {
     var label = String(name || '?');
     var domain = resolveEntityDomain(label, entityDomains);
+    if (!domain && PB && typeof PB.entityDomain === 'function') {
+      domain = PB.entityDomain(label, citedDomainList);
+    }
     if (!domain) {
       var fallback = brandLetterIcon(label, sz);
       fallback.title = label;

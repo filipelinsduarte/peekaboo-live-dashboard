@@ -50,10 +50,11 @@
     return 'low';
   }
 
-  // Product's Z(): guess a domain from a brand name for the favicon stack.
-  function guessDomain(name) {
-    return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
-  }
+  // NOTE: the product's Z() ("guess name + .com") used to live here. It is
+  // gone on purpose: it produced provably wrong favicons (kn.com,
+  // amazonuk.com). Mention icons now resolve through PB.entityDomain
+  // (tracked urls -> cited domains -> curated known map) and fall back to a
+  // letter avatar. Domains are NEVER constructed from names.
 
   function faviconUrl(domain) {
     return 'https://www.google.com/s2/favicons?domain=' + encodeURIComponent(domain) + '&sz=32';
@@ -74,8 +75,12 @@
   }
 
   // Aggregate a prompt-detail payload into the row fields the table needs.
-  // detail = { history: [{ rank, sentiment, brandMentions: [{entityName}] }],
+  // detail = { history: [{ rank, sentiment, brandMentions: [{entityName}],
+  //                        sources: [{ domain }] }],
   //            sourceSummary: [{ domain, mentions }] }
+  // citedDomains = every unique domain the AI actually cited for this prompt
+  // (history[].sources + sourceSummary); the mentions cell matches entity
+  // names against it instead of guessing domains.
   function summarizeDetail(detail) {
     var out = {
       sentiment: null,
@@ -84,6 +89,7 @@
       totalBrands: 0,
       topDomains: [],
       totalDomains: 0,
+      citedDomains: [],
     };
     if (!detail) return out;
 
@@ -91,6 +97,14 @@
     var ranks = [];
     var sentCounts = { positive: 0, neutral: 0, negative: 0 };
     var brandCounts = {};
+    var citedSeen = {};
+    function addCited(domain) {
+      if (!domain) return;
+      var d = String(domain).trim().toLowerCase();
+      if (!d || citedSeen[d]) return;
+      citedSeen[d] = true;
+      out.citedDomains.push(d);
+    }
 
     history.forEach(function (run) {
       if (!run) return;
@@ -106,6 +120,10 @@
         var name = m && m.entityName;
         if (!name) return;
         brandCounts[name] = (brandCounts[name] || 0) + 1;
+      });
+
+      (Array.isArray(run.sources) ? run.sources : []).forEach(function (s) {
+        if (s) addCited(s.domain);
       });
     });
 
@@ -126,6 +144,7 @@
     sources.sort(function (a, b) { return (Number(b.mentions) || 0) - (Number(a.mentions) || 0); });
     out.topDomains = sources.slice(0, 3).map(function (s) { return s.domain; });
     out.totalDomains = sources.length;
+    sources.forEach(function (s) { addCited(s.domain); });
     return out;
   }
 
@@ -182,7 +201,6 @@
   if (typeof window !== 'undefined') {
     window.PBPromptsLogic = {
       visClass: visClass,
-      guessDomain: guessDomain,
       sentimentFromCounts: sentimentFromCounts,
       summarizeDetail: summarizeDetail,
       compareRows: compareRows,
@@ -574,6 +592,54 @@
     return el('span', { class: 'aim-icon-stack' }, kids);
   }
 
+  // ---- mention icons ---------------------------------------------------------
+  // Tracked entity map for the mentions cells: lowercased name -> API url
+  // (the brand's own record from PB.state.brands + tracked competitors from
+  // GET /competitors). Refreshed per view render; PB.entityDomain checks it
+  // first, then the prompt's cited domains, then the curated known map.
+  var trackedDomains = {};
+  var trackedCache = { brandId: null, list: null };
+
+  // Deterministic letter-avatar color (same palette hash as prompt-detail's
+  // letterAvatarColor) for entities that do not resolve to a real domain.
+  var LETTER_PALETTE = ['#b352b3', '#10b981', '#2563eb', '#8b5cf6', '#64748b', '#06b6d4', '#f59e0b', '#f472b6', '#38bdf8', '#94a3b8'];
+  function letterAvatarColor(name) {
+    var n = String(name === null || name === undefined ? '?' : name);
+    var h = 0;
+    for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) & 0xffff;
+    return LETTER_PALETTE[h % LETTER_PALETTE.length];
+  }
+  function letterIcon(name) {
+    var n = String(name || '?');
+    return el('span', {
+      title: n,
+      style: 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:' + letterAvatarColor(n) + ';color:#fff;font-size:9px;font-weight:700;flex-shrink:0;',
+      text: n.charAt(0).toUpperCase(),
+    });
+  }
+
+  // One mention icon: real favicon when the chain resolves the entity name,
+  // deterministic letter avatar otherwise (the img swaps itself for the
+  // letter avatar when the favicon fails to load). Never a guessed domain.
+  function mentionIconNode(name, citedDomains) {
+    var label = String(name || '?');
+    var domain = null;
+    if (PB && typeof PB.entityDomain === 'function') {
+      domain = PB.entityDomain(label, citedDomains || [], trackedDomains);
+    }
+    if (!domain) return letterIcon(label);
+    var img = el('img', {
+      src: faviconUrl(domain), title: label, alt: label,
+      width: '18', height: '18', loading: 'lazy',
+      style: 'border-radius:50%;display:block;',
+      onerror: function () {
+        var letter = letterIcon(label);
+        if (img && img.parentNode) img.parentNode.replaceChild(letter, img);
+      },
+    });
+    return img;
+  }
+
   function sentimentNode(row) {
     var e = row.enrich;
     if (e.state === 'pending' || e.state === 'loading') return faintDash();
@@ -591,9 +657,18 @@
   function mentionsNode(row) {
     var e = row.enrich;
     if (e.state === 'pending' || e.state === 'loading') return skeletonStack('Loading mentions');
-    return iconStack(e.topBrands, e.totalBrands, function (name) {
-      return { src: faviconUrl(guessDomain(name)), title: name };
+    if (!e.topBrands || !e.topBrands.length) return faintDash();
+    var kids = e.topBrands.map(function (name) {
+      return mentionIconNode(name, e.citedDomains);
     });
+    var extra = Math.max(0, (e.totalBrands || e.topBrands.length) - e.topBrands.length);
+    if (extra > 0) {
+      kids.push(el('span', {
+        style: 'font-size:10px;font-weight:600;color:var(--aim-text-muted);margin-left:5px;',
+        text: '+' + extra,
+      }));
+    }
+    return el('span', { class: 'aim-icon-stack' }, kids);
   }
 
   function citationsNode(row) {
@@ -657,6 +732,33 @@
     ensureAimCss();
     ensureModalCss();
 
+    // ---- tracked entity map (brand url + competitor urls) for mention icons ----
+    // Kicked off in parallel with the prompt pages; awaited before the enrich
+    // workers start (mentions cells only render after enrichment).
+    trackedDomains = {};
+    try {
+      var stateBrands = (PB.state && PB.state.brands) || [];
+      for (var sb = 0; sb < stateBrands.length; sb++) {
+        var bRec = stateBrands[sb];
+        if (bRec && bRec.id === ctx.brandId && bRec.name && bRec.url) {
+          trackedDomains[String(bRec.name).trim().toLowerCase()] = bRec.url;
+          break;
+        }
+      }
+    } catch (e) { /* degrade: brand falls through to the cited/known steps */ }
+    var trackedPromise;
+    if (trackedCache.brandId === ctx.brandId && trackedCache.list) {
+      trackedPromise = Promise.resolve(trackedCache.list);
+    } else {
+      trackedPromise = PB.api.competitors(ctx.brandId)
+        .then(function (comp) {
+          var list = (comp && Array.isArray(comp.competitors)) ? comp.competitors : [];
+          trackedCache = { brandId: ctx.brandId, list: list };
+          return list;
+        })
+        .catch(function () { return null; });
+    }
+
     // ---- fetch all prompt pages ----
     var rows = [];
     var offset = 0;
@@ -683,6 +785,7 @@
             sentiment: null, position: null,
             topBrands: [], totalBrands: 0,
             topDomains: [], totalDomains: 0,
+            citedDomains: [],
           },
         });
       });
@@ -1391,12 +1494,24 @@
           row.enrich.totalBrands = summary.totalBrands;
           row.enrich.topDomains = summary.topDomains;
           row.enrich.totalDomains = summary.totalDomains;
+          row.enrich.citedDomains = summary.citedDomains;
         } catch (err) {
           row.enrich.state = 'error';
         }
         fillRow(row);
       }
     }
+    // finish the tracked-competitor fetch first so the mentions cells resolve
+    // tracked entities by their API urls (any failure degrades gracefully)
+    var compList = await trackedPromise;
+    (compList || []).forEach(function (c) {
+      if (c && c.name && c.url) {
+        var key = String(c.name).trim().toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(trackedDomains, key)) {
+          trackedDomains[key] = c.url;
+        }
+      }
+    });
     for (var w = 0; w < ENRICH_CONCURRENCY; w++) enrichWorker();
   });
 })();

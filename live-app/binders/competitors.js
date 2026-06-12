@@ -79,12 +79,39 @@
         entities = buildFromSnapshot(snap, brandName, brandUrl, snapComps);
       }
 
-      // mark "untracked" and fix visibility for entities from AI answers only.
+      // cited-domain corpus for the favicon resolution chain: snapshot
+      // sources + the domains seen while fetching untracked mentions. These
+      // are domains the AI actually cited; never constructed from names.
+      var citedDomains = [];
+      var citedSeen = {};
+      function addCited(domain) {
+        if (!domain) return;
+        var cd = String(domain).trim().toLowerCase();
+        if (!cd || citedSeen[cd]) return;
+        citedSeen[cd] = true;
+        citedDomains.push(cd);
+      }
+      var snapSources = (snap && Array.isArray(snap.sources)) ? snap.sources : [];
+      for (var ss = 0; ss < snapSources.length; ss++) {
+        if (snapSources[ss]) addCited(snapSources[ss].domain);
+      }
+      var untrackedCited = (data && data.untracked && Array.isArray(data.untracked.citedDomains))
+        ? data.untracked.citedDomains : [];
+      for (var uc = 0; uc < untrackedCited.length; uc++) addCited(untrackedCited[uc]);
+
+      // mark "untracked", fix visibility for entities from AI answers only,
+      // and resolve a favicon domain: API url first, then the shared chain
+      // (cited domains -> curated known map). Unresolved entities keep
+      // favDomain = '' (the img hides itself; no guessed kn.com style urls).
       for (var ei = 0; ei < entities.length; ei++) {
         var en = entities[ei];
         en.untracked = !en.isBrand && !trackedNames[String(en.name || '').toLowerCase()];
         if (en.untracked && entityStats[en.name] != null) {
           en.visibility = entityStats[en.name].vis;
+        }
+        en.favDomain = en.url || '';
+        if (!en.favDomain && PB.entityDomain) {
+          en.favDomain = PB.entityDomain(en.name, citedDomains) || '';
         }
       }
 
@@ -212,7 +239,9 @@
         var sent = e.sTyped ? Math.round((e.sPos / e.sTyped) * 100) : null;
         out.push({
           name: e.name,
-          url: urlByName[e.name.toLowerCase()] || e.name,
+          // API url only; entities with no url resolve through the cited /
+          // known-brand chain in the bind function (never name-as-domain)
+          url: urlByName[e.name.toLowerCase()] || '',
           visibility: vis,
           position: pos,
           sentiment: sent,
@@ -234,7 +263,7 @@
       if (brandName) {
         out.push({
           name: brandName,
-          url: brandUrl || brandName,
+          url: brandUrl || '',
           visibility: brandVis != null ? brandVis : 0,
           position: (snap && snap.visibility && snap.visibility.rank != null)
             ? Number(snap.visibility.rank) : null,
@@ -247,7 +276,7 @@
         if (!c.name) continue;
         out.push({
           name: c.name,
-          url: c.url || c.name,
+          url: c.url || '',
           visibility: (c.score != null && !isNaN(Number(c.score))) ? Number(c.score) : 0,
           position: (c.rank != null && c.rank !== '') ? Number(c.rank) : null,
           sentiment: null,
@@ -276,8 +305,16 @@
       if (brandCell) {
         var img = brandCell.querySelector('img');
         if (img) {
-          var fav = (PB.favicon) ? PB.favicon(ent.url || ent.name || '') : '';
-          if (fav) img.setAttribute('src', fav);
+          // favDomain = API url or chain-resolved cited/known domain; NEVER
+          // the entity name (no guessed favicon requests).
+          var favSrc = (ent.favDomain || ent.url) ? ((PB.favicon) ? PB.favicon(ent.favDomain || ent.url) : '') : '';
+          if (favSrc) {
+            img.setAttribute('src', favSrc);
+            img.style.visibility = '';
+          } else {
+            img.removeAttribute('src');
+            img.style.visibility = 'hidden';
+          }
           img.setAttribute('alt', ent.name || '');
         }
         var nameEl = brandCell.querySelector('span.truncate');

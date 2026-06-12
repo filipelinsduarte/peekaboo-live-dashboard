@@ -462,6 +462,25 @@ test('resolveEntityDomain handles nullish and blank inputs', () => {
   assert.equal(L.resolveEntityDomain('Autodoc', null), null);
 });
 
+test('collectCitedDomains unions history sources and sourceSummary, deduped + lowercased', () => {
+  const detail = {
+    history: [
+      { sources: [{ domain: 'Kwik-Fit.com' }, { domain: 'reddit.com' }] },
+      { sources: [{ domain: 'kwik-fit.com' }, { domain: 'carwow.co.uk' }] },
+      null,
+      { sources: null },
+    ],
+    sourceSummary: [{ domain: 'halfords.com' }, { domain: 'reddit.com' }, null],
+  };
+  eqJson(L.collectCitedDomains(detail), ['kwik-fit.com', 'reddit.com', 'carwow.co.uk', 'halfords.com']);
+});
+
+test('collectCitedDomains handles empty/missing payloads', () => {
+  eqJson(L.collectCitedDomains(null), []);
+  eqJson(L.collectCitedDomains({}), []);
+  eqJson(L.collectCitedDomains({ history: [], sourceSummary: [] }), []);
+});
+
 // ── summary ──────────────────────────────────────────────────────────────────
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

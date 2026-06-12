@@ -237,11 +237,17 @@
     });
     var untrackedEntities = [];
     var seenUntracked = {};
+    // Resolution chain for untracked entity favicons: domains the AI actually
+    // cited (collected by PBUntracked from the prompt details), then the
+    // curated known-brand map. Unresolved entities keep url = '' and render
+    // the letter tile; domains are never constructed from names.
+    var citedDomains = Array.isArray(untrackedResult.citedDomains) ? untrackedResult.citedDomains : [];
     untrackedRows.forEach(function (r) {
       var key = (r.entity_name || '').toLowerCase();
       if (!key || trackedAndBrandNames[key] || seenUntracked[key]) return;
       seenUntracked[key] = true;
-      untrackedEntities.push({ name: r.entity_name, url: '', isYou: false, isUntracked: true });
+      var resolved = (PB.entityDomain) ? (PB.entityDomain(r.entity_name, citedDomains) || '') : '';
+      untrackedEntities.push({ name: r.entity_name, url: resolved, isYou: false, isUntracked: true });
     });
 
     root.innerHTML = '';
@@ -530,12 +536,15 @@
     var COLS = 5;
     var matrix = promptMatrix(lookerRows, COLS);
 
-    // entity name -> url (for favicons); unknown entities get a letter tile
+    // entity name -> url (for favicons); unknown entities get a letter tile.
+    // Untracked entities only contribute a chain-resolved url (cited domain
+    // or curated known brand); the old "use the name as the domain" guess is
+    // gone, so unresolved entities fall through to the letter tile.
     var urlByName = {};
     urlByName[brandEnt.name] = brandEnt.url;
     competitors.forEach(function (c) { if (c && c.name) urlByName[c.name] = c.url; });
     (untrackedEntities || []).forEach(function (u) {
-      if (u && u.name) urlByName[u.name] = u.url || u.name;
+      if (u && u.name && u.url) urlByName[u.name] = u.url;
     });
 
     var bodyWrap = el('div', { style: { padding: '0px' } });

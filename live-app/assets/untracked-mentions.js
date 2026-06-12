@@ -3,12 +3,16 @@
  * extracts brandMentions with type="untracked" into synthetic looker-format
  * rows. Also computes correct visibility stats per entity.
  *
- * API: window.PBUntracked.fetch(brandId, timeRange) -> Promise<{rows, entityStats}>
+ * API: window.PBUntracked.fetch(brandId, timeRange) -> Promise<{rows, entityStats, citedDomains}>
  *   rows        = looker-compatible objects (entity_type: "untracked"); use for
  *                 the prompt matrix (visibility field = rank score, for sort tie-breaking only)
  *   entityStats = { [entityName]: { vis: number, byModel: { [model]: number } } }
  *                 vis = mentionCount / totalRuns * 100  (correct visibility %)
  *                 byModel[model] = modelMentions / totalRunsForModel * 100
+ *   citedDomains = unique domains the AI actually cited across the fetched
+ *                 prompt details (history[].sources + sourceSummary); feeds
+ *                 PB.entityDomain so untracked entity names can resolve to
+ *                 real cited domains (never guessed ones)
  *
  * Concurrency: 4 prompt-detail fetches at a time.
  * Caching: in-memory, 5-min TTL, keyed by brandId + "|" + timeRange.
@@ -29,12 +33,12 @@
     var entry = cache[key];
     if (!entry) return null;
     if (Date.now() > entry.expires) { delete cache[key]; return null; }
-    return { rows: entry.rows, entityStats: entry.entityStats };
+    return { rows: entry.rows, entityStats: entry.entityStats, citedDomains: entry.citedDomains || [] };
   }
 
-  function setCached(brandId, timeRange, rows, entityStats) {
+  function setCached(brandId, timeRange, rows, entityStats, citedDomains) {
     var key = cacheKey(brandId, timeRange);
-    cache[key] = { expires: Date.now() + CACHE_TTL_MS, rows: rows, entityStats: entityStats };
+    cache[key] = { expires: Date.now() + CACHE_TTL_MS, rows: rows, entityStats: entityStats, citedDomains: citedDomains || [] };
   }
 
   function runWithConcurrency(factories, limit) {
@@ -71,7 +75,7 @@
 
   function fetchUntrackedRows(brandId, timeRange) {
     var api = window.PBApi;
-    if (!api) return Promise.resolve({ rows: [], entityStats: {} });
+    if (!api) return Promise.resolve({ rows: [], entityStats: {}, citedDomains: [] });
 
     var cached = getCached(brandId, timeRange);
     if (cached !== null) return Promise.resolve(cached);
@@ -79,8 +83,8 @@
     return api.prompts(brandId, { time_range: timeRange, per_page: 100, page: 1 }).then(function (envelope) {
       var promptList = (envelope && Array.isArray(envelope.data)) ? envelope.data : [];
       if (!promptList.length) {
-        setCached(brandId, timeRange, [], {});
-        return { rows: [], entityStats: {} };
+        setCached(brandId, timeRange, [], {}, []);
+        return { rows: [], entityStats: {}, citedDomains: [] };
       }
 
       var factories = promptList.map(function (prompt) {
@@ -97,6 +101,18 @@
       return runWithConcurrency(factories, CONCURRENCY).then(function (detailResults) {
         var rows = [];
 
+        // Unique cited domains across all fetched details (real citations
+        // only; used by PB.entityDomain, never for guessing).
+        var citedDomains = [];
+        var citedSeen = {};
+        function addCited(domain) {
+          if (!domain) return;
+          var d = String(domain).trim().toLowerCase();
+          if (!d || citedSeen[d]) return;
+          citedSeen[d] = true;
+          citedDomains.push(d);
+        }
+
         // Counters for correct visibility calculation
         var totalRuns = 0;
         var totalRunsByModel = {};     // model -> count of history entries
@@ -110,9 +126,19 @@
           var promptText = result.promptText;
           var history = Array.isArray(detail.history) ? detail.history : [];
 
+          var summarySources = Array.isArray(detail.sourceSummary) ? detail.sourceSummary : [];
+          for (var ss = 0; ss < summarySources.length; ss++) {
+            if (summarySources[ss]) addCited(summarySources[ss].domain);
+          }
+
           for (var h = 0; h < history.length; h++) {
             var histEntry = history[h];
             if (!histEntry) continue;
+
+            var histSources = Array.isArray(histEntry.sources) ? histEntry.sources : [];
+            for (var hs = 0; hs < histSources.length; hs++) {
+              if (histSources[hs]) addCited(histSources[hs].domain);
+            }
 
             totalRuns++;
             var histModel = histEntry.aiModel || '';
@@ -166,11 +192,11 @@
           entityStats[en] = { vis: vis, byModel: byModel };
         }
 
-        setCached(brandId, timeRange, rows, entityStats);
-        return { rows: rows, entityStats: entityStats };
+        setCached(brandId, timeRange, rows, entityStats, citedDomains);
+        return { rows: rows, entityStats: entityStats, citedDomains: citedDomains };
       });
     }).catch(function () {
-      return { rows: [], entityStats: {} };
+      return { rows: [], entityStats: {}, citedDomains: [] };
     });
   }
 
@@ -179,7 +205,7 @@
       try {
         return fetchUntrackedRows(brandId, timeRange);
       } catch (e) {
-        return Promise.resolve({ rows: [], entityStats: {} });
+        return Promise.resolve({ rows: [], entityStats: {}, citedDomains: [] });
       }
     },
   };

@@ -860,9 +860,49 @@
 
   // The v4 source enriches expanded prompt rows with top-brand favicons from
   // the prompt response history; that data is not in the live snapshot, so
-  // this returns null and the chip renders without the favicon strip.
+  // _aimGetPromptData returns null and the chip renders without the strip.
   function _aimGetPromptData() { return null; }
-  function _aimBrandNameToDomain() { return null; }
+
+  // Every unique cited domain in the normalized snapshot (top_sources +
+  // top_source_urls): the corpus PB.entityDomain matches untracked entity
+  // names against. Real cited domains only; never constructed.
+  function _aimCitedDomains(snap) {
+    snap = snap || _snapNorm || {};
+    var out = [];
+    var seen = {};
+    function add(domain) {
+      if (!domain) return;
+      var d = String(domain).trim().toLowerCase();
+      if (!d || seen[d]) return;
+      seen[d] = true;
+      out.push(d);
+    }
+    (snap.top_sources || []).forEach(function (s) { if (s) add(s.domain); });
+    (snap.top_source_urls || []).forEach(function (u) { if (u) add(u.domain || u.url); });
+    return out;
+  }
+
+  // Brand name -> domain via the shared chain: tracked competitor domains
+  // from the snapshot first, then domains the AI actually cited, then the
+  // curated known-brand map. Returns null when nothing resolves (the chip
+  // keeps its deterministic fallback dot); never guesses a domain.
+  function _aimBrandNameToDomain(name) {
+    if (!name) return null;
+    try {
+      var snap = _snapNorm || {};
+      var tracked = {};
+      (snap.competitor_entities || []).forEach(function (c) {
+        if (c && c.name && c.domain) tracked[String(c.name).trim().toLowerCase()] = c.domain;
+      });
+      if (snap.brand && snap.brand_domain) {
+        tracked[String(snap.brand).trim().toLowerCase()] = snap.brand_domain;
+      }
+      if (window.PB && typeof window.PB.entityDomain === 'function') {
+        return window.PB.entityDomain(name, _aimCitedDomains(snap), tracked);
+      }
+    } catch (e) { /* fall through to the deterministic fallback */ }
+    return null;
+  }
 
   function aimRenderSigChip(text, favDomain, expand) {
     var hasExpand = expand && expand.items && expand.items.length;
@@ -1810,6 +1850,21 @@
 
     var injDomainMap = {};
     (snap.competitor_entities || []).forEach(function (c) { if (c.name && c.domain) injDomainMap[c.name.toLowerCase()] = c.domain; });
+    // Backfill competitors the API returned WITHOUT a url (untracked entities
+    // surfaced only in AI answers) through the shared resolution chain:
+    // domains the AI actually cited, then the curated known-brand map.
+    // Unresolved names stay out of the map (deterministic fallback icons);
+    // domains are never constructed from names.
+    if (window.PB && typeof window.PB.entityDomain === 'function') {
+      var _citedForChain = _aimCitedDomains(snap);
+      (snap.competitor_entities || []).forEach(function (c) {
+        if (!c || !c.name) return;
+        var key = c.name.toLowerCase();
+        if (injDomainMap[key]) return;
+        var resolved = window.PB.entityDomain(c.name, _citedForChain);
+        if (resolved) injDomainMap[key] = resolved;
+      });
+    }
 
     var overallVis = snap.overall_visibility || 0;
     var brand = snap.brand || 'Your Brand';

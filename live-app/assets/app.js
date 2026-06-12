@@ -5,6 +5,7 @@
  *   PB.registerView(name, renderFn)   renderFn(root, ctx)
  *   PB.state  PB.api  PB.el  PB.fmt  PB.favicon  PB.modelLogo  PB.modelLabel
  *   PB.models  PB.toast  PB.skeleton  PB.navigate  PB.card  PB.cardTitle  PB.boot
+ *   PB.entityDomain(name, citedDomains, trackedMap) -> domain | null
  *
  * Routing (hash): #/dashboard #/prompts #/competitors #/sources #/categories
  *                 #/prompts/:id
@@ -147,6 +148,325 @@
     },
   };
   if (typeof window !== 'undefined') window.PBTopbarLogic = TopbarLogic;
+
+  // ==========================================================================
+  // Entity name -> domain resolution (pure, no DOM). Exposed as
+  // window.PBEntityLogic for tests (node live-app/tests/entity-domain.test.mjs)
+  // and as PB.entityDomain for the views.
+  //
+  // Resolution chain (in priority order):
+  //   1. trackedMap   — API-provided urls (own brand + tracked competitors),
+  //                     keyed by trimmed lowercased entity name. Views build
+  //                     this from PB.state.brands / GET /competitors.
+  //   2. citedDomains — domains that actually appear in the API citation data
+  //                     on hand (sources[].domain etc). Conservative match:
+  //                     the normalized name must EXACTLY equal the normalized
+  //                     second-level label of the domain ("Kwik Fit" ->
+  //                     "kwikfit" matches kwik-fit.com; no prefix/contains).
+  //   3. KNOWN_BRAND_DOMAINS — curated map of real, verified domains for
+  //                     well-known brands (ported from the v4 dashboard's
+  //                     _entityDomain known map, extended with globally
+  //                     unambiguous consumer brands).
+  //   4. null         — caller falls back to a letter avatar. We NEVER
+  //                     construct or guess a domain from a name (hard rule).
+  // ==========================================================================
+
+  // Curated known-brand map. Every entry is a real domain that was verified;
+  // never add a constructed/guessed value here.
+  var KNOWN_BRAND_DOMAINS = {
+    // AI visibility / monitoring tools
+    'ai peekaboo': 'aipeekaboo.com',
+    'profound': 'tryprofound.com',
+    'otterly': 'otterly.ai',
+    'scrunch': 'scrunch.ai',
+    'peec': 'peec.ai',
+    'brandwise': 'brandwise.ai',
+    'evertune': 'evertune.ai',
+    'rankshift': 'rankshift.ai',
+    'athenahq': 'athenahq.com',
+    'llm pulse': 'llmpulse.com',
+    'rankability': 'rankability.com',
+    'geneo': 'geneo.ai',
+    'siftly': 'siftly.com',
+    'ziptie': 'ziptie.dev',
+    'ziptie.dev': 'ziptie.dev',
+    'se visible': 'sevisible.com',
+    'alarm pulse': 'alarm-pulse.ai',
+    'xfunnel': 'xfunnel.ai',
+    'am i cited': 'amicited.com',
+    'amicited': 'amicited.com',
+    'am i on ai?': 'amicited.com',
+    'indexly': 'indexly.ai',
+    'ayzeo': 'ayzeo.com',
+    'rank prompt': 'rankprompt.com',
+    'rankprompt': 'rankprompt.com',
+    'finseo': 'finseo.ai',
+    'allmond': 'allmond.app',
+    'allmond.app': 'allmond.app',
+    'writesonic': 'writesonic.com',
+    'sprout social': 'sproutsocial.com',
+    'gumloop': 'gumloop.com',
+    'answersocrates': 'answersocrates.com',
+    'promptwatch': 'promptwatch.com',
+    'visiblie': 'visiblie.com',
+    'rankscale': 'rankscale.ai',
+    // SEO / keyword research
+    'ahrefs': 'ahrefs.com',
+    'ahrefs brand radar': 'ahrefs.com',
+    'ahrefs webmaster tools': 'ahrefs.com',
+    'semrush': 'semrush.com',
+    'semrush ai toolkit': 'semrush.com',
+    'se ranking': 'seranking.com',
+    'se ranking ai toolkit': 'seranking.com',
+    'moz': 'moz.com',
+    'moz pro': 'moz.com',
+    'spyfu': 'spyfu.com',
+    'mangools': 'mangools.com',
+    'similarweb': 'similarweb.com',
+    'majestic': 'majestic.com',
+    'clearscope': 'clearscope.io',
+    'conductor': 'conductor.com',
+    'brightedge': 'brightedge.com',
+    'searchmetrics': 'searchmetrics.com',
+    'seoclarity': 'seoclarity.net',
+    'surfer': 'surferseo.com',
+    'surfer seo': 'surferseo.com',
+    'marketmuse': 'marketmuse.com',
+    'frase': 'frase.io',
+    'nightwatch': 'nightwatch.io',
+    'keyword.com': 'keyword.com',
+    'keyword': 'keyword.com',
+    'keyword insights': 'keywordinsights.ai',
+    'seo.ai': 'seo.ai',
+    // Brand monitoring / social listening
+    'brand24': 'brand24.com',
+    'brandwatch': 'brandwatch.com',
+    'talkwalker': 'talkwalker.com',
+    'mention': 'mention.com',
+    'awario': 'awario.com',
+    'meltwater': 'meltwater.com',
+    'sprinklr': 'sprinklr.com',
+    'hootsuite': 'hootsuite.com',
+    'buzzsumo': 'buzzsumo.com',
+    'cision': 'cision.com',
+    'keyhole': 'keyhole.co',
+    'emplifi': 'emplifi.io',
+    'amplitude': 'amplitude.com',
+    // Analytics / SaaS
+    'google analytics': 'analytics.google.com',
+    'hubspot': 'hubspot.com',
+    'hotjar': 'hotjar.com',
+    'mixpanel': 'mixpanel.com',
+    'heap': 'heap.io',
+    'salesforce': 'salesforce.com',
+    'mailchimp': 'mailchimp.com',
+    'slack': 'slack.com',
+    'zoom': 'zoom.us',
+    'notion': 'notion.so',
+    'canva': 'canva.com',
+    'figma': 'figma.com',
+    'adobe': 'adobe.com',
+    'shopify': 'shopify.com',
+    'stripe': 'stripe.com',
+    'klarna': 'klarna.com',
+    // Payments / finance
+    'paypal': 'paypal.com',
+    'visa': 'visa.com',
+    'mastercard': 'mastercard.com',
+    'american express': 'americanexpress.com',
+    'amex': 'americanexpress.com',
+    'revolut': 'revolut.com',
+    'wise': 'wise.com',
+    // Big tech / consumer electronics
+    'google': 'google.com',
+    'apple': 'apple.com',
+    'microsoft': 'microsoft.com',
+    'amazon': 'amazon.com',
+    'amazon uk': 'amazon.co.uk',
+    'ebay': 'ebay.com',
+    'ebay uk': 'ebay.co.uk',
+    'aliexpress': 'aliexpress.com',
+    'samsung': 'samsung.com',
+    'sony': 'sony.com',
+    'lg': 'lg.com',
+    'philips': 'philips.com',
+    'siemens': 'siemens.com',
+    'panasonic': 'panasonic.com',
+    'dell': 'dell.com',
+    'lenovo': 'lenovo.com',
+    'asus': 'asus.com',
+    'intel': 'intel.com',
+    'amd': 'amd.com',
+    'nvidia': 'nvidia.com',
+    'garmin': 'garmin.com',
+    'gopro': 'gopro.com',
+    // Retail
+    'walmart': 'walmart.com',
+    'target': 'target.com',
+    'costco': 'costco.com',
+    'ikea': 'ikea.com',
+    'tesco': 'tesco.com',
+    'argos': 'argos.co.uk',
+    'halfords': 'halfords.com',
+    'screwfix': 'screwfix.com',
+    'wickes': 'wickes.co.uk',
+    'b&q': 'diy.com',
+    // Automotive / parts / tyres
+    'bosch': 'bosch.com',
+    'brembo': 'brembo.com',
+    'denso': 'denso.com',
+    'valeo': 'valeo.com',
+    'mahle': 'mahle.com',
+    'acdelco': 'acdelco.com',
+    'liqui moly': 'liqui-moly.com',
+    'michelin': 'michelin.com',
+    'goodyear': 'goodyear.com',
+    'pirelli': 'pirelli.com',
+    'bridgestone': 'bridgestone.com',
+    'dunlop': 'dunlop.eu',
+    'castrol': 'castrol.com',
+    'shell': 'shell.com',
+    'bp': 'bp.com',
+    'kwik fit': 'kwik-fit.com',
+    'kwik-fit': 'kwik-fit.com',
+    'euro car parts': 'eurocarparts.com',
+    'gsf car parts': 'gsfcarparts.com',
+    'carwow': 'carwow.co.uk',
+    'ats euromaster': 'atseuromaster.co.uk',
+    'toyota': 'toyota.com',
+    'honda': 'honda.com',
+    'ford': 'ford.com',
+    'bmw': 'bmw.com',
+    'mercedes-benz': 'mercedes-benz.com',
+    'audi': 'audi.com',
+    'volkswagen': 'volkswagen.com',
+    'tesla': 'tesla.com',
+    'nissan': 'nissan.com',
+    'hyundai': 'hyundai.com',
+    'kia': 'kia.com',
+    // Apparel / sport
+    'nike': 'nike.com',
+    'adidas': 'adidas.com',
+    'puma': 'puma.com',
+    'decathlon': 'decathlon.com',
+    // Media / community / travel
+    'reddit': 'reddit.com',
+    'youtube': 'youtube.com',
+    'facebook': 'facebook.com',
+    'instagram': 'instagram.com',
+    'linkedin': 'linkedin.com',
+    'tiktok': 'tiktok.com',
+    'x': 'x.com',
+    'twitter': 'x.com',
+    'wikipedia': 'wikipedia.org',
+    'trustpilot': 'trustpilot.com',
+    'tripadvisor': 'tripadvisor.com',
+    'which?': 'which.co.uk',
+    'auto express': 'autoexpress.co.uk',
+    'netflix': 'netflix.com',
+    'spotify': 'spotify.com',
+    'airbnb': 'airbnb.com',
+    'uber': 'uber.com',
+    'booking.com': 'booking.com',
+    'expedia': 'expedia.com',
+  };
+
+  var EntityLogic = (function () {
+    // Lowercase + trim + strip a trailing ".ai" / " AI" suffix (v4 behavior).
+    // Used for the curated-map lookup only.
+    function knownKey(name) {
+      var n = String(name === null || name === undefined ? '' : name).trim().toLowerCase();
+      n = n.replace(/\.ai\s*$/, '');
+      n = n.replace(/\s+ai\s*$/, '');
+      return n.trim();
+    }
+
+    // Aggressive normalization for cited-domain matching: lowercase, then
+    // remove ASCII separators/punctuation ONLY. Non-ASCII letters (umlauts,
+    // accents) are kept so "Lemförder" ("lemförder") can never collapse to
+    // "lemfrder" and falsely match lemfrder.com.
+    function normalizeEntityName(name) {
+      var n = String(name === null || name === undefined ? '' : name).toLowerCase();
+      return n.replace(/[^a-z0-9\u00C0-\uFFFF]+/g, '');
+    }
+
+    // "https://www.Kwik-Fit.com/tyres?x=1" -> "kwik-fit.com"
+    function cleanHost(urlOrDomain) {
+      var d = String(urlOrDomain || '').trim().toLowerCase();
+      d = d.replace(/^https?:\/\//, '').replace(/[\/#?].*$/, '');
+      d = d.replace(/^www\./, '');
+      return d;
+    }
+
+    // Second-level label of a domain, handling co.uk / com.br style two-part
+    // public suffixes: carwow.co.uk -> "carwow", kwik-fit.com -> "kwik-fit".
+    var SECOND_LEVEL_SUFFIXES = { co: 1, com: 1, org: 1, net: 1, gov: 1, edu: 1, ac: 1, mil: 1 };
+    function domainSLD(urlOrDomain) {
+      var host = cleanHost(urlOrDomain);
+      if (!host) return '';
+      var labels = host.split('.');
+      if (labels.length < 2) return labels[0] || '';
+      var last = labels[labels.length - 1];
+      var secondLast = labels[labels.length - 2];
+      if (labels.length >= 3 && last.length === 2 && SECOND_LEVEL_SUFFIXES[secondLast]) {
+        return labels[labels.length - 3];
+      }
+      return secondLast;
+    }
+
+    // Exact normalized-equality match of the entity name against the SLD of
+    // each cited domain. No prefix/contains matching, ever.
+    function matchCitedDomain(name, citedDomains) {
+      var norm = normalizeEntityName(name);
+      if (!norm || !citedDomains || !citedDomains.length) return null;
+      for (var i = 0; i < citedDomains.length; i++) {
+        var host = cleanHost(citedDomains[i]);
+        if (!host) continue;
+        if (normalizeEntityName(domainSLD(host)) === norm) return host;
+      }
+      return null;
+    }
+
+    // Curated-map lookup (exact key, then ".ai"/" AI"-stripped key).
+    // Returns a verified domain or null. NEVER constructs a domain.
+    function knownDomain(name) {
+      var n = String(name === null || name === undefined ? '' : name).trim().toLowerCase();
+      if (!n) return null;
+      if (Object.prototype.hasOwnProperty.call(KNOWN_BRAND_DOMAINS, n)) {
+        return KNOWN_BRAND_DOMAINS[n];
+      }
+      var k = knownKey(name);
+      if (k && Object.prototype.hasOwnProperty.call(KNOWN_BRAND_DOMAINS, k)) {
+        return KNOWN_BRAND_DOMAINS[k];
+      }
+      return null;
+    }
+
+    // Full chain. trackedMap (optional): { lowercased name -> url } from the
+    // API (own brand + tracked competitors). Returns a domain string or null.
+    function entityDomain(name, citedDomains, trackedMap) {
+      if (name === null || name === undefined) return null;
+      var key = String(name).trim().toLowerCase();
+      if (!key) return null;
+      if (trackedMap && Object.prototype.hasOwnProperty.call(trackedMap, key) && trackedMap[key]) {
+        return cleanHost(trackedMap[key]) || null;
+      }
+      var cited = matchCitedDomain(name, citedDomains);
+      if (cited) return cited;
+      return knownDomain(name);
+    }
+
+    return {
+      KNOWN_BRAND_DOMAINS: KNOWN_BRAND_DOMAINS,
+      normalizeEntityName: normalizeEntityName,
+      cleanHost: cleanHost,
+      domainSLD: domainSLD,
+      matchCitedDomain: matchCitedDomain,
+      knownDomain: knownDomain,
+      entityDomain: entityDomain,
+    };
+  })();
+  if (typeof window !== 'undefined') window.PBEntityLogic = EntityLogic;
 
   // ---- DOM builder ----------------------------------------------------------
   function el(tag, attrs, children) {
@@ -1749,6 +2069,7 @@
   var PB = {
     state: state, api: window.PBApi, el: el, fmt: fmt,
     favicon: favicon, modelLogo: modelLogo, modelLabel: modelLabel, models: MODELS,
+    entityDomain: EntityLogic.entityDomain,
     toast: toast, skeleton: skeleton, navigate: navigate,
     registerView: function (name, fn) { views[name] = fn; },
     card: card, cardTitle: cardTitle, setPillStats: setPillStats,
