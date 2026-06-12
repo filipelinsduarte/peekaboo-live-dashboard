@@ -30,7 +30,7 @@ User workflow: recommendations land in **Suggested**, the user promotes them to 
 - `live-app/views/todos.js`: one IIFE containing CSS injection, data normalization, the rule engine, and all UI rendering. Registered as the `todos` view in the local SPA (`PB.registerView('todos', ...)`), reachable at `#/todos`.
 - The local SPA proxies `/api/*` to the real aipeekaboo REST API with the key attached (`live-app/proxy_server.py`), so all data below is real production API data.
 
-### Data consumed: exactly two endpoints
+### Data consumed: exactly three endpoints
 
 #### `GET /brands/:id/snapshot`
 
@@ -58,7 +58,29 @@ Called via `PB.api.prompts(brandId, { time_range, limit: 100 })`. Envelope: `{ d
 
 Fields actually used: `promptId`, `promptText`, `category`, `searchIntent`, `averageScore` (plus `aiModels` when present, to detect active providers). This endpoint is preferred over `snapshot.prompts` because it carries `promptId` (deep links into the Prompts view) and `searchIntent` (drives the commercial-intent rule).
 
-Both calls run in `Promise.all` with individual `.catch(() => null)` guards; a failed call degrades to the no-data fallback todo rather than breaking the view.
+#### `GET /looker/summary` (per-model stats)
+
+Called via `PB.api.looker({ start_date, end_date, brand_id, include_competitors: 'true', limit: 5000 })`, same params as the dashboard view; `start_date`/`end_date` are derived from the current time range (7/30/90 days back to today). Returns per-run rows:
+
+```
+{ date, brand, domain, prompt, visibility, citations, chats, ai_model,
+  search_intent, prompt_category, avg_position, sentiment, entity_type, entity_name }
+```
+
+Note: looker rows use snake_case `ai_model`, unlike promptDetail history which uses `aiModel`.
+
+The pure function `perModelStats(lookerRows, brandName)` (exposed on `window.PBTodosLogic`, unit-tested) filters to the brand's own rows (`entity_type === 'brand'`), groups by `ai_model` mapped through `modelIdToProv()` to the 5 provider keys, and returns per provider:
+
+```
+{ visibility: <mean of row visibility>,
+  sentiment:  <% positive among rows carrying a sentiment, rounded> | null,
+  position:   <mean of avg_position values > 0> | null,
+  runs:       <row count> }
+```
+
+Providers with fewer than 3 rows are dropped so one-off runs don't produce noisy gaps. The result is injected into the normalized snapshot as `latest_by_provider`, which is what activates rules 4 (model gap), 10 (brand sentiment), and 14 (Google AI gap).
+
+All three calls run in `Promise.all` with individual `.catch()` guards; a failed snapshot/prompts call degrades to the no-data fallback todo, and a failed looker call simply leaves `latest_by_provider` empty (the three per-model rules stay dormant for that load) rather than breaking the view.
 
 ### Normalization layer
 
@@ -75,8 +97,9 @@ Both calls run in `Promise.all` with individual `.catch(() => null)` guards; a f
   prompt_metrics: [{ prompt_id, prompt_text, visibility_all, topic, intent }],
   top_sources: [{ domain, citation_count, by_provider: {provKey: n}, providers: [provKey] }],
   sources_by_provider: { provKey: [{ domain, citation_count }] },  // sorted desc
-  latest_by_provider: {},          // per-model visibility/sentiment/position — EMPTY from live snapshot
-  aim_real_hm_data: {},            // competitor-by-model heatmap — EMPTY from live snapshot
+  latest_by_provider: {},          // per-model visibility/sentiment/position, injected from
+                                   // perModelStats(lookerRows) after normalization
+  aim_real_hm_data: {},            // competitor-by-model heatmap: still EMPTY from the live APIs
   top_source_urls: [],             // URL-level citations — EMPTY from live snapshot
   active_providers: [provKey]      // providers seen in sources[].aiModels / prompts[].aiModels
 }
@@ -87,6 +110,7 @@ Helper functions worth porting as-is (all unit-tested):
 - `cleanDomain(d)`: strips protocol, `www.`, path; lowercases
 - `modelIdToProv(m)`: maps raw model id strings (`gpt-4o-mini`, `sonar`, `google-ai-mode`, ...) to one of 5 provider keys via regex (see section 9, limitation 4)
 - `splitMentions(total, provs)`: deterministically splits a domain's citation total across the providers that cited it (non-negative integers summing exactly to the total). This is an approximation, the live snapshot only gives per-domain totals plus the model list.
+- `perModelStats(lookerRows, brandName)`: aggregates looker rows into the per-provider `latest_by_provider` stats (see the looker endpoint section above)
 
 ### Where the recommendation logic runs
 
@@ -151,28 +175,30 @@ All rules read the normalized snapshot. `overallVis` = `visibility.score`. `zero
 | # | Rule ID | Trigger | Priority | Effort | Type / Page | Title pattern | Data fields | Children |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `td-comp-gap` | Top competitor's visibility minus `overallVis` > 3 points | high | High | content / on-page | "Publish a '{brand} vs {comp}' comparison page" | `competitors[0]` (name, visibility, sentiment, mention_count), `total_runs`, zero-vis prompts, heatmap (if present) | 1 suggestion, folded into steps |
-| 2 | `td-zero-vis` | `zeroPrompts.length > 0` | high | High | content / on-page | "Publish new pages targeting {n} queries where you have zero visibility" | `prompt_metrics` (text, score, promptId), `lowPrompts` count | none |
-| 3 | `td-top-domain` | Top citation source (after skip list) has `citation_count >= 5`. Skip list: reddit/youtube/x/facebook/instagram/tiktok/linkedin/medium + all competitor domains + the brand's own domain | high | Med | backlinks / off-page | "Get listed on {domain}: it drives {share}% of AI citations in your space" | `top_sources`, `totalCitations`, per-provider splits | none |
-| 4 | `td-model-gap` | 2+ models have per-model visibility in `latest_by_provider` AND (strongest − weakest) > 3 points | high | Med | content / on-page | "Target {weakestModel} specifically: you get {x}% visibility there vs {y}% on {strongestModel}" | `latest_by_provider[].visibility`, `sources_by_provider` | none. `aiTargets = [weakestModel]` |
-| 5 | `td-diversify` | `top_sources.length >= 4` AND top-3 domains hold > 50% of `totalCitations` | medium | High | backlinks / off-page | "Diversify your citation sources: {share}% of AI citations come from just 3 domains" | `top_sources` (top 8), `totalCitations` | none |
-| 6 | `td-topic-cluster` | Weakest topic (`category`) with >= 2 prompts has avg visibility < `overallVis * 0.7` OR < 5% | medium | Med | content / on-page | "Build a content cluster for '{topic}': currently {x}% visibility across {n} prompts" | `prompt_metrics` grouped by `topic`/`category` | none |
-| 7 | `td-sentiment-opp` | A competitor with `visibility > overallVis` AND `sentiment < 55` exists | medium | Med | content / on-page | "Publish a '{comp} alternatives' page: they have {x}% visibility but only {s}% positive sentiment" | `competitors[]` (visibility, sentiment) | parent (3 steps) + 2 children (comparison page, Reddit engagement) |
-| 8 | `td-commercial` | Commercial-intent prompts exist AND their avg visibility < `overallVis * 0.85` OR < 5% | medium | Med | content / on-page | "Improve visibility on buying-intent queries: {n} commercial prompts average just {x}%" | `prompt_metrics[].intent` (`searchIntent`), scores | parent (2 steps) + 3 children (pricing/comparison page, persona pages, case study / ROI calculator) |
-| 9 | `td-reddit` | `reddit.com` in `top_sources` with `citation_count > 3` | medium | Med | reddit / off-page | "Get mentioned in Reddit threads: reddit.com drives {n} AI citations in your space ({share}%)" | `top_sources`, per-provider Reddit splits | 1 suggestion, folded. `aiTargets` limited to chatgpt/gemini/perplexity |
-| 10 | `td-brand-sentiment` | Average brand sentiment across `latest_by_provider[].sentiment` < 58% | high | High | content / on-page | "Fix how AI describes {brand}: average sentiment is {x}% positive across models" | `latest_by_provider[].sentiment` | parent has NO steps so it is not emitted; 5 children (review campaign, case studies page, objection posts, founder story pitch, "why teams switch" page) |
-| 11 | `td-position` | `overall_avg_position` (`visibility.rank`, falling back to avg per-model position) > 5 | medium | Med | content / on-page | "Move up in AI responses: {brand} is named at position {x} on average..." | `visibility.rank`, `latest_by_provider[].position` | parent (2 steps) + 3 children (own "best [category]" post, use-case pages, top-pick placements) |
-| 12 | `td-second-comp` | `competitors[1]` exists AND its visibility minus `overallVis` > 5 points | medium | High | content / on-page | "Close the gap with {comp2}: they have {x}% AI visibility vs your {y}%" | `competitors[1]`, heatmap (if present) | parent (1 step) + 4 children (vs page, Reddit threads, prompt-gap content, roundup outreach) |
-| 13 | `td-schema` | `zeroPrompts.length >= 2` OR `overallVis < 10` | medium | Low | technical-seo / on-page | "Add FAQ and HowTo schema to your key pages: structured data is what AI parses first" | question-format prompts (regex on `promptText`) | none |
-| 14 | `td-google-ai` | Google AIO / AI Mode visibility (min of the two present) < `chatgptVis * 0.55` AND `chatgptVis > 0` (requires `latest_by_provider`) | medium | Med | technical-seo / on-page | "Improve visibility on Google AI: only {x}% vs {y}% on ChatGPT" | `latest_by_provider` for googleaio/googleaimode/chatgpt, `sources_by_provider.googleaio` | parent (3 steps) + 2 children (backlinks from AIO-cited domains, "best [category]" guide) |
-| 15 | `td-original-data` | No research/study/report URL pattern in `top_source_urls` OR `overallVis < 12` | medium | High | content / on-page | "Publish an original data study: research reports are the highest-cited content type across all AI models" | `top_source_urls` (URL regex), `top_sources` | 1 suggestion, folded |
-| 16 | `td-press` | At least 1 tech-media domain (techcrunch, forbes, theverge, wired, venturebeat, ... 18-entry pattern list) in `top_sources` AND `overallVis < 20` | medium | High | backlinks / off-page | "Get {brand} covered in tech media: {domains} already drive AI citations in your space" | `top_sources` filtered by news domain patterns | 1 suggestion, folded |
-| 17 | `td-youtube` | YouTube (`youtube.com` / `m.youtube.com` / `youtu.be`, combined via `youtubeStats`) in `top_sources` with combined `citation_count >= 2` | high if YouTube ranks in the top 5 sources by citations, else medium | High | youtube / off-page | "Create video content for the topics AI already answers with YouTube" | `top_sources` (YouTube citations, share of total, providers citing it), `prompt_metrics` topics | none. `aiTargets` = providers citing YouTube, fallback `activeProviders()` |
-| 18 | `td-social` | Combined `citation_count >= 2` across social domains in `top_sources` (linkedin.com, x.com, twitter.com, facebook.com, instagram.com, tiktok.com, quora.com, medium.com, threads.net; reddit.com and YouTube excluded, they have their own rules; via `socialSourceStats`) | high if combined social citations >= 5, else medium | Med | social-media / off-page | "Build a presence on {top platform}, which AI models cite in your category" | per-platform citation counts, combined social share, providers citing social content | single platform: none (platform steps on the parent). 2+ platforms: parent (3 steps) + 1 child per platform (max 4) with platform-appropriate steps (Quora answers, LinkedIn expert posts, Medium articles, X threads, generic) |
-| 19 | `td-crawl` | `brand_domain` non-empty AND not cited in `top_sources` (no entry for the domain or any subdomain with `citation_count > 0`, via `brandCitedInSources`) AND `top_sources.length >= 3` | high | Low | crawlability / on-page | "Make {brand domain} accessible and citable for AI crawlers" | `top_sources` (count of cited domains, top 3 domains), `brand_domain` | none. Steps: robots.txt AI-crawler allowlist (GPTBot/PerplexityBot/Google-Extended/ClaudeBot), llms.txt, server-side rendering, structured data, Bing index check |
+| 2 | `td-zero-vis` | `zeroPrompts.length > 0` | high | High | content / on-page | "Create pages for the {n} questions where you never show up" | `prompt_metrics` (text, score, promptId), `lowPrompts` count | none |
+| 3 | `td-top-domain` | Top citation source (after skip list) has `citation_count >= 5`. Skip list: reddit/youtube/x/facebook/instagram/tiktok/linkedin/medium + all competitor domains + the brand's own domain | high | Med | backlinks / off-page | "Get listed on {domain}: {share}% of AI mentions come from it" | `top_sources`, `totalCitations`, per-provider splits | none |
+| 4 | `td-model-gap` | 2+ models have per-model visibility in `latest_by_provider` AND (strongest − weakest) > 3 points | high | Med | content / on-page | "Catch up on {weakestModel}: {x}% there vs {y}% on {strongestModel}" | `latest_by_provider[].visibility` (looker per-model stats), `sources_by_provider` | none. `aiTargets = [weakestModel]` |
+| 5 | `td-diversify` | `top_sources.length >= 4` AND top-3 domains hold > 50% of `totalCitations` | medium | High | backlinks / off-page | "Get quoted on more sites: 3 sites drive {share}% of your AI mentions" | `top_sources` (top 8), `totalCitations` | none |
+| 6 | `td-topic-cluster` | Weakest topic (`category`) with >= 2 prompts has avg visibility < `overallVis * 0.7` OR < 5% | medium | Med | content / on-page | "Cover '{topic}' properly: you show up in just {x}% of those questions" | `prompt_metrics` grouped by `topic`/`category` | none |
+| 7 | `td-sentiment-opp` | A competitor with `visibility > overallVis` AND `sentiment < 55` exists | medium | Med | content / on-page | "Publish a '{comp} alternatives' page: only {s}% of their mentions are positive" | `competitors[]` (visibility, sentiment) | parent (3 steps) + 2 children ("{brand} vs {comp}" page, join Reddit complaint threads) |
+| 8 | `td-commercial` | Commercial-intent prompts exist AND their avg visibility < `overallVis * 0.85` OR < 5% | medium | Med | content / on-page | "Win the buying questions: you show up in just {x}% of them" | `prompt_metrics[].intent` (`searchIntent`), scores | parent (2 steps) + 3 children (pricing comparison page, buyer-type landing pages, case study with real numbers) |
+| 9 | `td-reddit` | `reddit.com` in `top_sources` with `citation_count > 3` | medium | Med | reddit / off-page | "Get {brand} recommended on Reddit: AI quotes it in {n} answers" | `top_sources`, per-provider Reddit splits | 1 suggestion, folded. `aiTargets` limited to chatgpt/gemini/perplexity |
+| 10 | `td-brand-sentiment` | Average brand sentiment across `latest_by_provider[].sentiment` < 58% | high | High | content / on-page | "Change how AI talks about {brand}: only {x}% of mentions are positive" | `latest_by_provider[].sentiment` (looker per-model stats) | parent has NO steps so it is not emitted; 5 children (collect reviews, customer stories, answer criticisms, founder story pitch, "why teams switch" page) |
+| 11 | `td-position` | `overall_avg_position` (`visibility.rank`, falling back to avg per-model position) > 5 | medium | Med | content / on-page | "Get {brand} named earlier: you average position {x} in AI answers" | `visibility.rank`, `latest_by_provider[].position` (looker per-model stats) | parent (2 steps) + 3 children (own "best [category]" list, "best for [use case]" pages, top-pick placements) |
+| 12 | `td-second-comp` | `competitors[1]` exists AND its visibility minus `overallVis` > 5 points | medium | High | content / on-page | "Close the gap with {comp2}: {x}% visibility vs your {y}%" | `competitors[1]`, heatmap (if present) | parent (1 step) + 4 children (vs page, Reddit threads, page per missed question, get added to articles featuring {comp2}) |
+| 13 | `td-schema` | `zeroPrompts.length >= 2` OR `overallVis < 10` | medium | Low | technical-seo / on-page | "Add FAQ markup so AI can quote your key pages" | question-format prompts (regex on `promptText`) | none |
+| 14 | `td-google-ai` | Google AIO / AI Mode visibility (min of the two present) < `chatgptVis * 0.55` AND `chatgptVis > 0` (requires `latest_by_provider`) | medium | Med | technical-seo / on-page | "Show up in Google AI answers: {x}% there vs {y}% on ChatGPT" | `latest_by_provider` for googleaio/googleaimode/chatgpt (looker per-model stats), `sources_by_provider.googleaio` | parent (3 steps) + 2 children (links from sites Google AI quotes, "best [category]" guide) |
+| 15 | `td-original-data` | No research/study/report URL pattern in `top_source_urls` OR `overallVis < 12` | medium | High | content / on-page | "Publish your own data study: AI has to quote original numbers" | `top_source_urls` (URL regex), `top_sources` | 1 suggestion, folded |
+| 16 | `td-press` | At least 1 tech-media domain (techcrunch, forbes, theverge, wired, venturebeat, ... 18-entry pattern list) in `top_sources` AND `overallVis < 20` | medium | High | backlinks / off-page | "Get {brand} covered on {domain}: AI already quotes it" | `top_sources` filtered by news domain patterns | 1 suggestion, folded |
+| 17 | `td-youtube` | YouTube (`youtube.com` / `m.youtube.com` / `youtu.be`, combined via `youtubeStats`) in `top_sources` with combined `citation_count >= 2` | high if YouTube ranks in the top 5 sources by citations, else medium | High | youtube / off-page | "Make YouTube videos for the questions AI already answers with video" | `top_sources` (YouTube citations, share of total, providers citing it), `prompt_metrics` topics | none. `aiTargets` = providers citing YouTube, fallback `activeProviders()` |
+| 18 | `td-social` | Combined `citation_count >= 2` across social domains in `top_sources` (linkedin.com, x.com, twitter.com, facebook.com, instagram.com, tiktok.com, quora.com, medium.com, threads.net; reddit.com and YouTube excluded, they have their own rules; via `socialSourceStats`) | high if combined social citations >= 5, else medium | Med | social-media / off-page | "Start posting on {top platform}: AI quotes it in your category" | per-platform citation counts, combined social share, providers citing social content | single platform: none (platform steps on the parent). 2+ platforms: parent (3 steps) + 1 child per platform (max 4) with platform-appropriate steps (Quora answers, LinkedIn expert posts, Medium articles, X threads, generic) |
+| 19 | `td-crawl` | `brand_domain` non-empty AND not cited in `top_sources` (no entry for the domain or any subdomain with `citation_count > 0`, via `brandCitedInSources`) AND `top_sources.length >= 3` | high | Low | crawlability / on-page | "Let AI crawlers read {brand domain}" | `top_sources` (count of cited domains, top 3 domains), `brand_domain` | none. Steps: robots.txt AI-crawler allowlist (GPTBot/PerplexityBot/Google-Extended/ClaudeBot), llms.txt, server-side rendering, structured data, Bing index check |
 
 **Fallback (`td-no-data`)**: if zero rules fire (empty snapshot, brand never analyzed), a single medium-priority todo is emitted telling the user to run an analysis. The UI never renders an empty table.
 
-Important: rules 4, 10, and 14 depend on `latest_by_provider` (per-model visibility/sentiment/position), and rule 1's per-model signal expansion depends on `aim_real_hm_data` (competitor-by-model heatmap). **The live snapshot endpoint does not return these today**, so those rules rarely or never fire in the PoC. The production backend has this data (it powers the dashboard's per-model views); wiring it in immediately upgrades the engine.
+Rules 4, 10, and 14 read `latest_by_provider` (per-model visibility/sentiment/position), which is now populated from the `/looker/summary` rows via `perModelStats()` (see section 2), so all three fire whenever the brand has 3+ looker rows on 2+ models and the thresholds are met. The one remaining gap: rule 1's per-model signal expansion depends on `aim_real_hm_data` (competitor-by-model heatmap), which no live endpoint returns yet, so that expansion stays empty in the PoC.
+
+Title copy follows a plain-language standard: action verb first, the action in the title and the data in reasoning/signals, no SEO/analytics jargon ("citation sources" becomes "sites AI quotes", "structured data" becomes "FAQ markup"), dynamic specifics (brands, domains, percentages) kept, under ~70 characters where possible, sentence case, no em dashes, no exclamation marks. The same register applies to suggestion-child titles.
 
 ---
 
@@ -185,8 +211,8 @@ GET /brands/:id/recommendations?time_range=30d
 → { data: Recommendation[] }   // schema from section 3
 ```
 
-- **Input**: exactly the data the backend already has for the snapshot + prompts endpoints, plus per-model visibility/sentiment/position and the competitor heatmap (unlocking rules 4, 10, 14).
-- **Implementation path**: port `normalizeSnapshot()` and `aimGenerateTodos()` from `todos.js` to the backend language. Both are pure functions with no DOM or network dependencies, and the existing unit tests (`tests/todos.logic.test.mjs`, 44 tests) define the expected behavior and translate directly into backend test cases.
+- **Input**: exactly the data the backend already has for the snapshot + prompts + looker endpoints (per-model visibility/sentiment/position come from the looker rows, see section 2), plus the competitor heatmap (which would unlock rule 1's per-model signal expansion).
+- **Implementation path**: port `normalizeSnapshot()`, `perModelStats()`, and `aimGenerateTodos()` from `todos.js` to the backend language. All are pure functions with no DOM or network dependencies, and the existing unit tests (`tests/todos.logic.test.mjs`, 58 tests) define the expected behavior and translate directly into backend test cases.
 - **Advantages**:
   - One maintainable home for the rule logic; new rules ship without a frontend deploy
   - Server-side caching per brand + time range (the output only changes when an analysis runs, so cache until next analysis)
@@ -197,10 +223,10 @@ GET /brands/:id/recommendations?time_range=30d
 
 ### Option B — Keep client-side (faster to ship)
 
-- Port `todos.js` into a React route in the Next.js app: one component tree (Table, DetailPanel, Filters, FloatingBar) + a `useRecommendations(brandId, range)` hook wrapping the same two API calls + the pure logic module.
+- Port `todos.js` into a React route in the Next.js app: one component tree (Table, DetailPanel, Filters, FloatingBar) + a `useRecommendations(brandId, range)` hook wrapping the same three API calls + the pure logic module.
 - Keep `normalizeSnapshot` + `aimGenerateTodos` as a plain TS module (no React) so the existing unit tests carry over.
 - **Advantages**: no backend work, ships in days, logic already proven against production API data.
-- **Disadvantages**: logic lives in the browser (visible, harder to version), no server caching, per-model data still missing unless extra endpoints are called, triage state stays in `localStorage` (per browser, not per account) unless a separate persistence endpoint is added anyway.
+- **Disadvantages**: logic lives in the browser (visible, harder to version), no server caching, triage state stays in `localStorage` (per browser, not per account) unless a separate persistence endpoint is added anyway.
 
 Either way: do not rewrite the rule semantics. Port them, keep the tests green, then iterate.
 
@@ -315,7 +341,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 |---|---|
 | `live-app/views/todos.js` | Full implementation: CSS, normalization, rule engine, UI, view registration, `window.PBTodosLogic` export |
 | `live-app/assets/api.js` | API client (`window.PBApi`): endpoint paths, envelope handling, error type |
-| `live-app/tests/todos.logic.test.mjs` | 44 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion, weekly cache, merge, YouTube/social/crawlability triggers). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
+| `live-app/tests/todos.logic.test.mjs` | 58 unit tests for the pure logic (normalization, provider mapping, rule thresholds, expansion, weekly cache, merge, YouTube/social/crawlability triggers, looker per-model stats, model-gap/sentiment/Google-AI rule activation). Run: `node live-app/tests/todos.logic.test.mjs` (zero deps, non-zero exit on failure) |
 | `live-app/index.html` | SPA shell: sidebar nav item (`href="#/todos"`) and `<script src="/views/todos.js">` wiring |
 | `live-app/proxy_server.py` | Local proxy that maps `/api/*` to the real REST API with the key attached |
 
@@ -326,7 +352,7 @@ Notable component styles: priority/page/type badges share one `.aim-intent-badge
 1. **Logic is client-side.** Visible in the browser, re-runs on every view load, no caching. Moves server-side in production (Option A).
 2. **`competitors[]` may be empty.** If a brand has no competitors configured, rules 1, 7, and 12 never fire and the plan loses its strongest recommendations. Production should surface "add competitors to unlock more recommendations" in that case.
 3. **No URL-level citation data.** The snapshot only exposes domain-level sources, so the detail panel's example list falls back to one synthetic entry per domain (`url = domain`, `citation_count` = domain total). The backend has real cited URLs; using them restores per-URL examples, accurate page-type badges, and the URL-pattern strategies (`alternatives-vs`, `schema-examples`, etc.) at full strength.
-4. **Per-model data is missing from the snapshot.** `latest_by_provider` (visibility/sentiment/position per model) and the competitor heatmap arrive empty, so rules 4 (model gap), 10 (brand sentiment), and 14 (Google AI gap) effectively never fire in the PoC, and `splitMentions` has to approximate per-provider citation counts. Production should feed the real per-model numbers.
+4. **Per-model data now comes from `/looker/summary`, but the heatmap is still missing.** `latest_by_provider` (visibility/sentiment/position per model) is built client-side by `perModelStats()` from the looker rows, so rules 4 (model gap), 10 (brand sentiment), and 14 (Google AI gap) fire whenever the data supports them (3+ rows per provider, 2+ providers). Two caveats remain: the competitor-by-model heatmap (`aim_real_hm_data`) still arrives empty, so rule 1's per-model signal expansion never renders, and `splitMentions` still approximates per-provider citation counts because the snapshot only gives per-domain totals. Production should compute the per-model stats server-side instead of fetching up to 5,000 looker rows into the browser.
 5. **Provider keys come from string-matching model ids** (`modelIdToProv`: regexes for gpt/gemini/sonar/aio/ai-mode). Adding a new AI model to the platform requires updating this map, or, better, the backend should return a canonical provider key per model.
 6. **Effort filter bug**: generated todos use the string `"Med effort"` but the Medium filter matches the substring `"medium"`, so the Medium effort filter currently returns nothing. Fix in production by making `effort` an enum (`low | medium | high`) and formatting the label in the UI.
 7. **Priority reassignments and triage state are not account-level.** Priority overrides are lost on reload; added/completed/archived/notes live in `localStorage` per browser. Production needs DB persistence keyed by brand + recommendation id (the deterministic ids make this safe).
@@ -345,7 +371,7 @@ The plan no longer regenerates on every page load. Cadence is weekly, per brand:
 - Storage: `localStorage` key `pb_td_weekly_<brandId>` holding `{ generatedAt: <ISO string>, todos: [...] }`.
 - On view load the stored entry is classified by the pure function `weeklyCacheState(stored, nowMs)` (exposed on `window.PBTodosLogic`, unit-tested): `'fresh'` (< 7 days = 604,800,000 ms), `'expired'` (>= 7 days, boundary inclusive), or `'missing'` (absent, unparseable, or structurally corrupt; `JSON.parse` failures and bad shapes all fall back to `'missing'`, never throw).
 - `fresh`: stored todos are used as-is. `expired` or `missing`: the two API endpoints are re-fetched, the rule engine re-runs, the cache is written with a new `generatedAt`, and (on `expired` only, not first-ever generation) the user sees the toast "Your action plan has been refreshed with this week's data".
-- The snapshot + prompts fetch still runs on every load regardless of cache state, because the detail panel's example URLs read the normalized snapshot. Only the todo *generation* is on the weekly cycle.
+- The snapshot + prompts + looker fetch still runs on every load regardless of cache state, because the detail panel's example URLs and the per-model stats read the normalized snapshot. Only the todo *generation* is on the weekly cycle.
 - The existing stale-ID purge for the added/completed/archived sets runs against whichever todo set is active.
 - A caption under the page subtitle ("Updated <Mon DD> · refreshes weekly") is driven by `generatedAt`.
 - Brand switches are independent: each brand has its own key and its own 7-day window.
@@ -356,7 +382,7 @@ The plan no longer regenerates on every page load. Cadence is weekly, per brand:
 
 An accent CTA in the table filter row opens a dropdown with the six user-facing categories (Content, Social Media, Reddit, YouTube, Backlinks, Crawlability, mapping to `recType` keys `content`, `social-media`, `reddit`, `youtube`, `backlinks`, `crawlability`). Selecting one:
 
-1. Re-fetches the snapshot + prompts endpoints.
+1. Re-fetches the snapshot + prompts + looker endpoints (so the per-model rules see fresh data too).
 2. Re-runs the deterministic rule engine, filters the output to the selected `recType`.
 3. Merges via the pure function `mergeNewTodos(existing, generated, recType)` (exposed on `window.PBTodosLogic`, unit-tested): appends only todos whose `id` is not already present, returns `{merged, addedCount}`, mutates nothing. Because archived/completed todos remain in the existing set, their ids are never resurrected.
 4. Writes the merged set back into the weekly cache **without changing `generatedAt`**, so on-demand generation does not reset the weekly window.

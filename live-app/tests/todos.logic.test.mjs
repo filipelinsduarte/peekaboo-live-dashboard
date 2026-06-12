@@ -167,7 +167,7 @@ test('generateTodos emits the zero-visibility todo with the right count', () => 
   const todos = L.generateTodos(liveSnap, livePromptRows, 'Acme', 'https://acme.com');
   const zero = todos.find((t) => t.id === 'td-zero-vis');
   assert.ok(zero, 'td-zero-vis should exist (2 prompts at 0)');
-  assert.ok(zero.title.includes('2 queries'), 'title carries the zero-prompt count, got: ' + zero.title);
+  assert.ok(zero.title.includes('2 questions'), 'title carries the zero-prompt count, got: ' + zero.title);
 });
 
 test('generateTodos top-domain todo computes the citation share and skips brand/competitor/social domains', () => {
@@ -192,7 +192,7 @@ test('generateTodos emits the Reddit todo when reddit.com has > 3 citations', ()
   const reddit = todos.find((t) => t.id === 'td-reddit');
   assert.ok(reddit, 'td-reddit should exist (10 reddit citations)');
   assert.equal(reddit.recType, 'reddit');
-  assert.ok(reddit.title.includes('10 AI citations'), 'carries the citation count, got: ' + reddit.title);
+  assert.ok(reddit.title.includes('10 answers'), 'carries the citation count, got: ' + reddit.title);
 });
 
 test('generateTodos emits the schema todo when 2+ zero-visibility prompts', () => {
@@ -602,6 +602,183 @@ test('new-rule todos fall back to activeProviders when sources carry no aiModels
     assert.ok(t, id + ' fires');
     assert.ok(t.aiTargets.length > 0, id + ': aiTargets falls back to all providers');
   });
+});
+
+// ── perModelStats (looker per-model aggregation) ─────────────────────────────
+// Looker rows use snake_case `ai_model` (NOT the promptDetail `aiModel`).
+const lookerBrandRows = [
+  { date: '2026-06-10', ai_model: 'gpt-4o-mini', visibility: 100, sentiment: 'positive', avg_position: 1, entity_type: 'brand', entity_name: 'Acme' },
+  { date: '2026-06-10', ai_model: 'gpt-4o', visibility: 50, sentiment: 'negative', avg_position: 3, entity_type: 'brand', entity_name: 'Acme' },
+  { date: '2026-06-11', ai_model: 'gpt-4o-mini', visibility: 0, sentiment: 'positive', avg_position: 0, entity_type: 'brand', entity_name: 'Acme' },
+  // gemini: only 2 brand rows -> below the default 3-row minimum
+  { date: '2026-06-10', ai_model: 'gemini-2.5-flash', visibility: 100, sentiment: 'positive', avg_position: 1, entity_type: 'brand', entity_name: 'Acme' },
+  { date: '2026-06-11', ai_model: 'gemini-2.5-flash', visibility: 0, sentiment: null, avg_position: 0, entity_type: 'brand', entity_name: 'Acme' },
+  // competitor rows must never count toward the brand's stats
+  { date: '2026-06-10', ai_model: 'gpt-4o-mini', visibility: 100, sentiment: 'positive', avg_position: 1, entity_type: 'competitor', entity_name: 'WidgetCo' },
+  { date: '2026-06-10', ai_model: 'sonar-pro', visibility: 100, sentiment: 'positive', avg_position: 1, entity_type: 'competitor', entity_name: 'WidgetCo' },
+];
+
+test('perModelStats groups brand rows by ai_model into provider keys', () => {
+  const stats = L.perModelStats(lookerBrandRows, 'Acme');
+  assert.ok(stats.chatgpt, 'gpt-4o-mini/gpt-4o rows group under chatgpt');
+  assert.equal(stats.chatgpt.runs, 3);
+  assert.equal(stats.chatgpt.visibility, 50, 'visibility is the mean: (100+50+0)/3');
+  assert.ok(!stats.perplexity, 'competitor-only sonar rows do not create a provider entry');
+});
+
+test('perModelStats sentiment is percent positive among rows carrying a sentiment', () => {
+  const stats = L.perModelStats(lookerBrandRows, 'Acme');
+  // chatgpt: positive, negative, positive -> round(2/3 * 100) = 67
+  assert.equal(stats.chatgpt.sentiment, 67);
+});
+
+test('perModelStats position is the mean of avg_position values > 0', () => {
+  const stats = L.perModelStats(lookerBrandRows, 'Acme');
+  // chatgpt avg_position values: 1, 3, 0 -> zeros excluded -> mean 2
+  assert.equal(stats.chatgpt.position, 2);
+  // a provider with only zero positions gets null
+  const onlyZero = L.perModelStats([
+    { ai_model: 'sonar', visibility: 10, sentiment: 'positive', avg_position: 0, entity_type: 'brand' },
+    { ai_model: 'sonar', visibility: 10, sentiment: 'positive', avg_position: 0, entity_type: 'brand' },
+    { ai_model: 'sonar', visibility: 10, sentiment: 'positive', avg_position: 0, entity_type: 'brand' },
+  ], 'Acme');
+  assert.equal(onlyZero.perplexity.position, null);
+});
+
+test('perModelStats drops providers below the minimum row count', () => {
+  const stats = L.perModelStats(lookerBrandRows, 'Acme');
+  assert.ok(!stats.gemini, '2 gemini rows is below the default minimum of 3');
+  const relaxed = L.perModelStats(lookerBrandRows, 'Acme', 1);
+  assert.ok(relaxed.gemini, 'explicit minRows=1 keeps gemini');
+  assert.equal(relaxed.gemini.runs, 2);
+  assert.equal(relaxed.gemini.visibility, 50);
+});
+
+test('perModelStats requires the snake_case ai_model field (not aiModel)', () => {
+  const camelRows = [
+    { aiModel: 'gpt-4o-mini', visibility: 10, sentiment: 'positive', entity_type: 'brand' },
+    { aiModel: 'gpt-4o-mini', visibility: 10, sentiment: 'positive', entity_type: 'brand' },
+    { aiModel: 'gpt-4o-mini', visibility: 10, sentiment: 'positive', entity_type: 'brand' },
+  ];
+  assert.equal(Object.keys(L.perModelStats(camelRows, 'Acme')).length, 0, 'camelCase aiModel rows cannot be grouped');
+});
+
+test('perModelStats returns {} for empty, null, or non-array input', () => {
+  assert.equal(Object.keys(L.perModelStats([], 'Acme')).length, 0);
+  assert.equal(Object.keys(L.perModelStats(null, 'Acme')).length, 0);
+  assert.equal(Object.keys(L.perModelStats(undefined, 'Acme')).length, 0);
+  assert.equal(Object.keys(L.perModelStats('nope', 'Acme')).length, 0);
+});
+
+test('perModelStats falls back to entity_name matching when entity_type is missing', () => {
+  const rows = [
+    { ai_model: 'gpt-4o-mini', visibility: 20, sentiment: 'positive', avg_position: 1, entity_name: 'Acme' },
+    { ai_model: 'gpt-4o-mini', visibility: 20, sentiment: 'positive', avg_position: 1, entity_name: 'Acme' },
+    { ai_model: 'gpt-4o-mini', visibility: 20, sentiment: 'positive', avg_position: 1, entity_name: 'Acme' },
+    { ai_model: 'gpt-4o-mini', visibility: 99, sentiment: 'negative', avg_position: 9, entity_name: 'SomeoneElse' },
+  ];
+  const stats = L.perModelStats(rows, 'Acme');
+  assert.equal(stats.chatgpt.runs, 3, 'name-matched rows count, other entities do not');
+  assert.equal(stats.chatgpt.visibility, 20);
+});
+
+// ── reactivated rules: td-model-gap / td-brand-sentiment / td-google-ai ──────
+// generateTodos reads latest_by_provider straight off the snapshot, which is
+// exactly where the view now injects perModelStats() output.
+function snapWithProviders(latestByProvider) {
+  return {
+    brand: { name: 'Acme' },
+    visibility: { score: 10, rank: 2, totalChatsAnalyzed: 50 },
+    sources: [
+      { domain: 'g2.com', mentions: 12, aiModels: ['gpt-4o-mini'] },
+      { domain: 'capterra.com', mentions: 6, aiModels: ['gemini-2.0-flash'] },
+    ],
+    competitors: [],
+    latest_by_provider: latestByProvider,
+  };
+}
+
+test('td-model-gap fires when the strongest-weakest model gap exceeds 3 points', () => {
+  const todos = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 20, sentiment: 80, position: 2.5, runs: 10 },
+    gemini: { visibility: 5, sentiment: 80, position: 3.2, runs: 8 },
+  }), [], 'Acme', 'https://acme.com');
+  const gap = todos.find((t) => t.id === 'td-model-gap');
+  assert.ok(gap, 'td-model-gap should exist (20 vs 5 = 15-point gap)');
+  assert.deepEqual(Array.from(gap.aiTargets), ['gemini'], 'targets the weakest model');
+  assert.ok(gap.title.includes('Gemini'), 'title names the weakest model, got: ' + gap.title);
+  assert.ok(gap.title.includes('5.0%') && gap.title.includes('20.0%'), 'title carries both numbers, got: ' + gap.title);
+});
+
+test('td-model-gap does not fire at a gap of 3 points or less, or with one model', () => {
+  const close = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 10, sentiment: 80, position: 2, runs: 10 },
+    gemini: { visibility: 8, sentiment: 80, position: 2, runs: 8 },
+  }), [], 'Acme', 'https://acme.com');
+  assert.ok(!close.find((t) => t.id === 'td-model-gap'), '2-point gap is below the > 3 threshold');
+  const single = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 30, sentiment: 80, position: 2, runs: 10 },
+  }), [], 'Acme', 'https://acme.com');
+  assert.ok(!single.find((t) => t.id === 'td-model-gap'), 'one model cannot have a gap');
+});
+
+test('td-brand-sentiment fires below 58% average positive sentiment', () => {
+  const todos = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 20, sentiment: 70, position: 2, runs: 10 },
+    gemini: { visibility: 15, sentiment: 40, position: 3, runs: 8 },
+    googleaio: { visibility: 14, sentiment: 50, position: 4, runs: 6 },
+  }), [], 'Acme', 'https://acme.com');
+  // avg = (70+40+50)/3 = 53.3 < 58. Parent has no steps of its own, so only
+  // the 5 suggestion children are emitted, grouped under td-brand-sentiment.
+  const kids = todos.filter((t) => t._groupId === 'td-brand-sentiment');
+  assert.equal(kids.length, 5, '5 sentiment-fix children emitted');
+  assert.ok(kids[0]._groupLabel.includes('53%'), 'group label carries the rounded average, got: ' + kids[0]._groupLabel);
+  assert.ok(!todos.find((t) => t.id === 'td-brand-sentiment'), 'parent without steps is not emitted as a row');
+});
+
+test('td-brand-sentiment does not fire at 58% or above', () => {
+  const todos = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 20, sentiment: 70, position: 2, runs: 10 },
+    gemini: { visibility: 15, sentiment: 60, position: 3, runs: 8 },
+  }), [], 'Acme', 'https://acme.com');
+  assert.ok(!todos.find((t) => t._groupId === 'td-brand-sentiment'), 'avg 65% is above the < 58 threshold');
+});
+
+test('td-google-ai fires when Google AI visibility is under 55% of ChatGPT', () => {
+  const todos = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 20, sentiment: 80, position: 2, runs: 10 },
+    googleaio: { visibility: 4, sentiment: 80, position: 3, runs: 6 },
+  }), [], 'Acme', 'https://acme.com');
+  const g = todos.find((t) => t.id === 'td-google-ai');
+  assert.ok(g, 'td-google-ai should exist (4 < 20 * 0.55)');
+  assert.ok(g.title.includes('4.0%') && g.title.includes('20.0%'), 'title carries both numbers, got: ' + g.title);
+  assert.deepEqual(Array.from(g.aiTargets), ['googleaio'], 'targets the Google AI surface with data');
+  const kids = todos.filter((t) => t._groupId === 'td-google-ai');
+  assert.equal(kids.length, 2, 'backlinks + best-guide children emitted');
+});
+
+test('td-google-ai uses the weaker of AIO and AI Mode when both are present', () => {
+  const todos = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 20, sentiment: 80, position: 2, runs: 10 },
+    googleaio: { visibility: 18, sentiment: 80, position: 3, runs: 6 },
+    googleaimode: { visibility: 3, sentiment: 80, position: 3, runs: 5 },
+  }), [], 'Acme', 'https://acme.com');
+  const g = todos.find((t) => t.id === 'td-google-ai');
+  assert.ok(g, 'min(18, 3) = 3 < 11 -> fires');
+  assert.ok(g.title.includes('3.0%'), 'title uses the weaker Google surface, got: ' + g.title);
+});
+
+test('td-google-ai does not fire when Google AI holds up or ChatGPT is at zero', () => {
+  const fine = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 20, sentiment: 80, position: 2, runs: 10 },
+    googleaio: { visibility: 15, sentiment: 80, position: 3, runs: 6 },
+  }), [], 'Acme', 'https://acme.com');
+  assert.ok(!fine.find((t) => t.id === 'td-google-ai'), '15 >= 20 * 0.55 -> no todo');
+  const zeroChat = L.generateTodos(snapWithProviders({
+    chatgpt: { visibility: 0, sentiment: 80, position: 2, runs: 10 },
+    googleaio: { visibility: 0, sentiment: 80, position: 3, runs: 6 },
+  }), [], 'Acme', 'https://acme.com');
+  assert.ok(!zeroChat.find((t) => t.id === 'td-google-ai'), 'chatgpt at 0 -> no todo');
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
