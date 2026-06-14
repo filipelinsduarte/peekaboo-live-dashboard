@@ -96,15 +96,45 @@ window.PBbind.visibility = function (root, ctx, data) {
       if (brandName && ('' + n).toLowerCase() === ('' + brandName).toLowerCase()) brandKey = n;
     });
 
-    // competitors that actually have time-series data, ranked by avg visibility
+    // competitors that actually have time-series data, ranked by avg visibility.
+    // The real card plots/legends the brand + its top competitors as a compact
+    // set of ~5 brand icons, so cap competitors to 4 (brand + 4 = 5 icons).
     var competitors = entityOrder.filter(function (n) { return n !== brandKey; });
     competitors.sort(function (a, b) { return avgFor(b) - avgFor(a); });
-    competitors = competitors.slice(0, 8);
+    competitors = competitors.slice(0, 4);
+
+    // ---- favicon-domain resolver (legend shows brand icons, like the real
+    //      card) — API url first, then the shared cited/known chain; never the
+    //      entity name as a domain. Returns '' when unresolved (img hidden). ----
+    var PBh = window.PB || {};
+    var snapV = (data && data.snap) || {};
+    var urlByNameV = {};
+    if (brandName && snapV.brand && snapV.brand.url) urlByNameV[brandName.toLowerCase()] = snapV.brand.url;
+    var snapCompsV = (snapV && Array.isArray(snapV.competitors)) ? snapV.competitors : [];
+    for (var sci = 0; sci < snapCompsV.length; sci++) {
+      var scv = snapCompsV[sci] || {};
+      if (scv.name && scv.url) urlByNameV[String(scv.name).toLowerCase()] = scv.url;
+    }
+    var citedDomainsV = [];
+    var citedSeenV = {};
+    var snapSourcesV = (snapV && Array.isArray(snapV.sources)) ? snapV.sources : [];
+    for (var ssi = 0; ssi < snapSourcesV.length; ssi++) {
+      var dv = snapSourcesV[ssi] && snapSourcesV[ssi].domain;
+      if (!dv) continue;
+      var dvl = String(dv).trim().toLowerCase();
+      if (dvl && !citedSeenV[dvl]) { citedSeenV[dvl] = true; citedDomainsV.push(dvl); }
+    }
+    function favDomainFor(name) {
+      var key = String(name || '').toLowerCase();
+      var d = urlByNameV[key] || '';
+      if (!d && PBh.entityDomain) d = PBh.entityDomain(name, citedDomainsV) || '';
+      return d;
+    }
 
     // ---- empty-state guard (no dates / no plottable series) ----
     if (!dates.length || (!brandKey && !competitors.length)) {
       renderLegend([
-        brandName ? { name: brandName, color: BRAND_PURPLE, isBrand: true } : null,
+        brandName ? { name: brandName, color: BRAND_PURPLE, isBrand: true, favDomain: favDomainFor(brandName) } : null,
       ].filter(Boolean));
       chartBox.innerHTML = '';
       var msg = document.createElement('div');
@@ -117,13 +147,13 @@ window.PBbind.visibility = function (root, ctx, data) {
     // ordered legend/series list: brand (purple) then competitors
     var series = [];
     if (brandKey) {
-      series.push({ name: brandKey, color: BRAND_PURPLE, isBrand: true });
+      series.push({ name: brandKey, color: BRAND_PURPLE, isBrand: true, favDomain: favDomainFor(brandKey) });
     } else if (brandName) {
       // brand has no time-series rows but is still the subject: list it cleanly
-      series.push({ name: brandName, color: BRAND_PURPLE, isBrand: true });
+      series.push({ name: brandName, color: BRAND_PURPLE, isBrand: true, favDomain: favDomainFor(brandName) });
     }
     competitors.forEach(function (n, i) {
-      series.push({ name: n, color: COMP_COLORS[i % COMP_COLORS.length], isBrand: false });
+      series.push({ name: n, color: COMP_COLORS[i % COMP_COLORS.length], isBrand: false, favDomain: favDomainFor(n) });
     });
 
     function seriesData(name) {
@@ -227,16 +257,31 @@ window.PBbind.visibility = function (root, ctx, data) {
           var item = document.createElement('div');
           item.className = 'flex items-center gap-1.5';
 
-          var swatch = document.createElement('span');
-          swatch.className = 'inline-block w-4 h-[3px] rounded-full';
-          swatch.style.backgroundColor = s.color;
+          // brand-icon legend (matches the real card): 16px favicon, not a
+          // colored line swatch. Hide the img when no domain resolves (never
+          // a guessed name-as-domain favicon request).
+          var icon = document.createElement('img');
+          icon.setAttribute('width', '16');
+          icon.setAttribute('height', '16');
+          icon.setAttribute('alt', '');
+          icon.setAttribute('aria-hidden', 'true');
+          icon.setAttribute('loading', 'lazy');
+          icon.className = 'rounded object-contain bg-white border border-gray-200/60 flex-shrink-0';
+          icon.style.width = '16px';
+          icon.style.height = '16px';
+          var favSrc = (s.favDomain && window.PB && PB.favicon) ? PB.favicon(s.favDomain) : '';
+          if (favSrc) {
+            icon.setAttribute('src', favSrc);
+          } else {
+            icon.style.visibility = 'hidden';
+          }
 
           var label = document.createElement('span');
           var base = s.isBrand ? 'text-[11px] font-medium' : 'text-[11px] text-muted-foreground';
           label.className = allowTruncate ? (base + ' truncate max-w-[100px]') : base;
           label.textContent = s.isBrand ? (s.name + ' (You)') : s.name;
 
-          item.appendChild(swatch);
+          item.appendChild(icon);
           item.appendChild(label);
           legend.appendChild(item);
         });

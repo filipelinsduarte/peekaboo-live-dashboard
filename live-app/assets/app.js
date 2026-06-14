@@ -1371,7 +1371,13 @@
     var footer = el('div', { class: 'border-t border-gray-200 p-1 bg-gray-50' }, [
       el('div', {
         role: 'menuitem', class: MENU_FOOTER_ITEM_CLS,
-        onclick: function () { closeMenu(); openAddBrandWizard(); },
+        onclick: function () {
+          closeMenu();
+          // Use the ported v4 3-step "Add New Brand" wizard when available;
+          // fall back to the legacy in-app wizard if the module didn't load.
+          if (window.PBAddBrand && window.PBAddBrand.open) window.PBAddBrand.open();
+          else openAddBrandWizard();
+        },
       }, [
         el('div', { class: 'w-6 h-6 rounded flex items-center justify-center bg-gradient-to-br from-brand/30 to-brand-secondary/30' }, [
           lucideIcon('plus', 'w-3 h-3 text-gray-700'),

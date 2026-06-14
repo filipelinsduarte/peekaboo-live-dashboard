@@ -274,3 +274,42 @@ a[aria-label="PeekABoo home"]::after {
   font-family: inherit;
   color: #374151; /* gray-700 */
 }
+
+/* ------------------------------------------- Clerk UserButton avatar
+   Clerk's component CSS (emotion) is injected at runtime by Clerk's JS, which
+   does not run in this static mirror. Without it the account avatar <img>
+   renders at its intrinsic size as a big un-clipped square. Constrain it to the
+   round 32px (w-8 h-8) it is on the real dashboard. Applies to both the sidebar
+   account block and the mobile top-bar instance. */
+.cl-userButtonAvatarBox,
+.cl-avatarBox {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px;
+  border-radius: 9999px !important;
+  overflow: hidden !important;
+  flex-shrink: 0;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+}
+.cl-avatarImage,
+.cl-userButtonAvatarImage {
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 9999px !important;
+  object-fit: cover !important;
+  display: block;
+}
+.cl-userButtonTrigger {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  border-radius: 9999px !important;
+}
+.cl-userButtonBox {
+  display: inline-flex !important;
+  align-items: center;
+}

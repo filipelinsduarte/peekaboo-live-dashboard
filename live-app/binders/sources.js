@@ -275,59 +275,80 @@ window.PBbind.sources = function (root, ctx, data) {
         empty.className = 'py-3 text-[11px] text-muted-foreground';
         empty.textContent = 'No sources yet.';
         listBox.appendChild(empty);
-      } else {
-        sources.forEach(function (src) {
-          var domain = cleanDomain(src && src.domain);
-          var cites = Number(src && src.mentions) || 0;
-          var usedPct = total > 0 ? ((cites / total) * 100).toFixed(1) + '%' : '0%';
-          var type = classify(src && src.domain);
-
-          var rowEl = htmlToNode(templateHTML);
-          if (!rowEl) return;
-
-          var cells = rowEl.children;
-          // cell 0: favicon + domain name
-          var domainCell = cells[0];
-          if (domainCell) {
-            var img = domainCell.querySelector('img');
-            if (img) {
-              img.setAttribute('src', fav(domain));
-              img.setAttribute('alt', domain);
-            }
-            var nameSpan = domainCell.querySelector('span.truncate');
-            if (nameSpan) { nameSpan.textContent = domain; nameSpan.title = domain; }
-          }
-          // cell 1: USED (% of citations)
-          if (cells[1]) cells[1].textContent = usedPct;
-          // cell 2: CITES (mentions count)
-          if (cells[2]) cells[2].textContent = String(cites);
-          // cell 3: TYPE pill
-          var typeCell = cells[3];
-          if (typeCell) {
-            typeCell.innerHTML = '';
-            typeCell.className = 'text-right';
-            var pill = document.createElement('span');
-            pill.className = 'inline-flex items-center text-[9px] px-1.5 py-0.5 rounded-full font-medium text-white ' +
-                             (TYPE_PILL_BG[type] || 'bg-slate-400');
-            pill.textContent = type;
-            typeCell.appendChild(pill);
-          }
-
-          listBox.appendChild(rowEl);
-        });
+        var counter0 = findCounter(card);
+        if (counter0) counter0.textContent = '0 of 0';
+        return;
       }
 
-      // update the "1-6 of 15" counter to the live count
+      // The real card shows the TOP 20 domains by citations, paginated 10 per
+      // page (1-10, then 11-20). Sort by citations desc and cap to 20.
+      var TOP_N = 20;
+      var PAGE_SIZE = 10;
+      var ranked = sources.slice().sort(function (a, b) {
+        return (Number(b && b.mentions) || 0) - (Number(a && a.mentions) || 0);
+      });
+      if (ranked.length > TOP_N) ranked = ranked.slice(0, TOP_N);
+
+      var rowNodes = [];
+      ranked.forEach(function (src) {
+        var domain = cleanDomain(src && src.domain);
+        var cites = Number(src && src.mentions) || 0;
+        var usedPct = total > 0 ? ((cites / total) * 100).toFixed(1) + '%' : '0%';
+        var type = classify(src && src.domain);
+
+        var rowEl = htmlToNode(templateHTML);
+        if (!rowEl) return;
+
+        var cells = rowEl.children;
+        // cell 0: favicon + domain name
+        var domainCell = cells[0];
+        if (domainCell) {
+          var img = domainCell.querySelector('img');
+          if (img) {
+            img.setAttribute('src', fav(domain));
+            img.setAttribute('alt', domain);
+          }
+          var nameSpan = domainCell.querySelector('span.truncate');
+          if (nameSpan) { nameSpan.textContent = domain; nameSpan.title = domain; }
+        }
+        // cell 1: USED (% of citations)
+        if (cells[1]) cells[1].textContent = usedPct;
+        // cell 2: CITES (mentions count)
+        if (cells[2]) cells[2].textContent = String(cites);
+        // cell 3: TYPE pill
+        var typeCell = cells[3];
+        if (typeCell) {
+          typeCell.innerHTML = '';
+          typeCell.className = 'text-right';
+          var pill = document.createElement('span');
+          pill.className = 'inline-flex items-center text-[9px] px-1.5 py-0.5 rounded-full font-medium text-white ' +
+                           (TYPE_PILL_BG[type] || 'bg-slate-400');
+          pill.textContent = type;
+          typeCell.appendChild(pill);
+        }
+
+        rowNodes.push(rowEl);
+      });
+
+      // paginate: 10 per page, chevron prev/next ("Previous/Next domains"),
+      // "1-10 of N" counter — mirrors the competitors card.
       var counter = findCounter(card);
-      if (counter) {
-        var n = sources.length;
-        counter.textContent = n ? ('1-' + n + ' of ' + n) : '0 of 0';
-      }
-
-      // disable prev/next (all rows shown)
-      var navBtns = card.querySelectorAll('button[aria-label$="domains"]');
-      for (var b = 0; b < navBtns.length; b++) {
-        try { navBtns[b].setAttribute('disabled', ''); } catch (e) {}
+      var prevBtn = card.querySelector('button[aria-label="Previous domains"]');
+      var nextBtn = card.querySelector('button[aria-label="Next domains"]');
+      if (window.PBdash && window.PBdash.paginate) {
+        window.PBdash.paginate({
+          container: listBox,
+          rows: rowNodes,
+          pageSize: PAGE_SIZE,
+          counterEl: counter,
+          prevBtn: prevBtn,
+          nextBtn: nextBtn,
+        });
+      } else {
+        for (var f = 0; f < rowNodes.length && f < PAGE_SIZE; f++) {
+          listBox.appendChild(rowNodes[f]);
+        }
+        if (counter) counter.textContent = '1-' + Math.min(PAGE_SIZE, rowNodes.length) + ' of ' + rowNodes.length;
       }
     }
 

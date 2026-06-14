@@ -153,5 +153,71 @@
       }
       return null;
     },
+
+    // Client-side pager shared by the Competitors + Top Domains cards. The
+    // real dashboard paginates these lists (e.g. "1-8 of 13") with chevron
+    // prev/next buttons; we mirror that exactly.
+    //   opts.container : element the data rows live in (header row stays put)
+    //   opts.rows      : array of row DOM nodes (already capped to top-N)
+    //   opts.pageSize  : rows per page (default 10)
+    //   opts.counterEl : the "1-10 of 20" <span> (optional)
+    //   opts.prevBtn   : previous-page <button> (optional)
+    //   opts.nextBtn   : next-page <button> (optional)
+    // Returns { rerender } so callers can force a redraw. Wires the buttons so
+    // the top-right next chevron flips to the second view, per the spec.
+    paginate: function (opts) {
+      opts = opts || {};
+      var rows = opts.rows || [];
+      var container = opts.container;
+      var pageSize = opts.pageSize > 0 ? opts.pageSize : 10;
+      var counterEl = opts.counterEl || null;
+      var prevBtn = opts.prevBtn || null;
+      var nextBtn = opts.nextBtn || null;
+      var total = rows.length;
+      var pages = Math.max(1, Math.ceil(total / pageSize));
+      var page = 0;
+      var rendered = [];
+
+      function setDisabled(btn, off) {
+        if (!btn) return;
+        if (off) { btn.setAttribute('disabled', ''); btn.disabled = true; }
+        else { btn.removeAttribute('disabled'); btn.disabled = false; }
+      }
+
+      function render() {
+        // detach the previously shown page's rows (leave header + anything else)
+        for (var i = 0; i < rendered.length; i++) {
+          if (rendered[i] && rendered[i].parentNode === container) {
+            container.removeChild(rendered[i]);
+          }
+        }
+        rendered = [];
+        var start = page * pageSize;
+        var end = Math.min(total, start + pageSize);
+        for (var j = start; j < end; j++) {
+          if (rows[j]) { container.appendChild(rows[j]); rendered.push(rows[j]); }
+        }
+        if (counterEl) {
+          counterEl.textContent = total > 0
+            ? ((start + 1) + '-' + end + ' of ' + total)
+            : '0 of 0';
+        }
+        setDisabled(prevBtn, page <= 0);
+        setDisabled(nextBtn, page >= pages - 1);
+      }
+
+      if (prevBtn) {
+        prevBtn.addEventListener('click', function () {
+          if (page > 0) { page--; render(); }
+        });
+      }
+      if (nextBtn) {
+        nextBtn.addEventListener('click', function () {
+          if (page < pages - 1) { page++; render(); }
+        });
+      }
+      render();
+      return { rerender: render };
+    },
   };
 })();

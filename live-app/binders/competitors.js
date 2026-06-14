@@ -122,6 +122,12 @@
         return String(a.name).localeCompare(String(b.name));
       });
 
+      // The real card never dumps the full universe (hundreds of entities for
+      // big brands) — it shows the TOP 20 by visibility, paginated 10 per page.
+      var TOP_N = 20;
+      var PAGE_SIZE = 10;
+      if (entities.length > TOP_N) entities = entities.slice(0, TOP_N);
+
       // --- locate the row list container ---------------------------------
       var grids = card.querySelectorAll('.grid');
       if (!grids || !grids.length) { console.error('[bind competitors] no grid rows'); return; }
@@ -177,17 +183,34 @@
         }
       }
 
-      // --- build a row per entity ----------------------------------------
+      // --- build a row per entity (rank is the GLOBAL rank, 1..20, so the
+      //     second page correctly shows 11..20) ----------------------------
+      var rowNodes = [];
       for (var c = 0; c < entities.length; c++) {
         var ent = entities[c] || {};
         var row = template.cloneNode(true);
         fillRow(row, ent, c + 1, PB, fmt);
-        container.appendChild(row);
+        rowNodes.push(row);
       }
 
-      // --- update pagination count ("1-N of N") + disable next -----------
-      updateCount(card, entities.length);
-      disableNext(card);
+      // --- paginate: 10 per page, chevron prev/next, "1-10 of N" counter --
+      var pager = findPager(card);
+      if (window.PBdash && window.PBdash.paginate) {
+        window.PBdash.paginate({
+          container: container,
+          rows: rowNodes,
+          pageSize: PAGE_SIZE,
+          counterEl: pager.counter,
+          prevBtn: pager.prev,
+          nextBtn: pager.next,
+        });
+      } else {
+        // ultra-defensive fallback: show the first page only
+        for (var f = 0; f < rowNodes.length && f < PAGE_SIZE; f++) {
+          container.appendChild(rowNodes[f]);
+        }
+        updateCount(card, entities.length);
+      }
     } catch (e) {
       console.error('[bind competitors]', e);
     }
@@ -394,6 +417,24 @@
       if (ctx && ctx.brandUrl) return ctx.brandUrl;
     } catch (e) { /* ignore */ }
     return '';
+  }
+
+  // Locate the card's pagination controls: the "1-8 of 19" counter span and
+  // the chevron prev/next buttons (aria-label "Previous page" / "Next page").
+  function findPager(card) {
+    var counter = null, prev = null, next = null;
+    try {
+      var spans = card.querySelectorAll('span');
+      for (var i = 0; i < spans.length; i++) {
+        var t = (spans[i].textContent || '').trim();
+        if (/^\d+\s*-\s*\d+\s+of\s+\d+$/i.test(t) || /^\d+\s+of\s+\d+$/i.test(t)) {
+          counter = spans[i]; break;
+        }
+      }
+      prev = card.querySelector('button[aria-label="Previous page"]');
+      next = card.querySelector('button[aria-label="Next page"]');
+    } catch (e) { console.error('[bind competitors findPager]', e); }
+    return { counter: counter, prev: prev, next: next };
   }
 
   function updateCount(card, total) {
