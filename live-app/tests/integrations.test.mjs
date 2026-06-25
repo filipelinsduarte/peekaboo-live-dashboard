@@ -36,14 +36,14 @@ function check(name, cond) {
   else { console.error('FAIL ' + name); failures += 1; }
 }
 
-const KEY = 'pk_47e53424-d73b-4732-a7e7-ed7be6e02376_0935e89eb41762344ddfd00ed25ebef8e5e0146677f2c3ce789b10d8ba1709a1';
+const KEY = 'pk_example0-0000-4000-8000-000000000000_0000000000000000000000000000000000000000000000000000000000example';
 
 // ---- maskKey ----------------------------------------------------------------
-check('maskKey shows first 11 + last 6', internals.maskKey(KEY) === 'pk_47e53424…1709a1');
+check('maskKey shows first 11 + last 6', internals.maskKey(KEY) === 'pk_example0…xample');
 check('maskKey rejects non-pk keys', internals.maskKey('sk_abcdefghijklmnop') === '');
 check('maskKey rejects short keys', internals.maskKey('pk_short') === '');
 check('maskKey tolerates null', internals.maskKey(null) === '');
-check('maskKey never leaks the middle', internals.maskKey(KEY).indexOf('0935e89e') === -1);
+check('maskKey never leaks the middle', internals.maskKey(KEY).indexOf('example0-0000') === -1);
 
 // ---- mcpJsonSnippet -----------------------------------------------------------
 const json = internals.mcpJsonSnippet(KEY);
