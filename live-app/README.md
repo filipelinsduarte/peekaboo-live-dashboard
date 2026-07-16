@@ -52,7 +52,7 @@ vercel deploy --prod
 | `#/ask-ai` | `views/ask-ai.js` | none (static shell; the public API has no chat endpoint) |
 | `#/integrations` | `views/integrations.js` | — |
 
-`#/prompts/:id` is the v4 prompt detail layout: header card with topic/intent badges and a stats row (Visibility / Sentiment / Avg Position / Run days), Top Brands + Top Citations favicon clusters, date-grouped collapsible Response History with a 7-column table (Model / Response Preview / Sentiment / Visibility / Avg Position / Mentions / Citations), and a full-response modal with a Mentions/Citations sidebar. Pure logic is exported as `window.PBPromptDetailLogic` (tested).
+`#/prompts/:id` was substantially redesigned from the original v4 port (July 2026) into a denser, more capable layout: a prompt-switcher dropdown (with per-prompt visibility score + sort), a header card (Mentions/Visibility/Sentiment/Avg Position stats + Top Brands/Citations/Content Type), a 4-mode chart card (Visibility/Heatmap/Citations/Mentions), a paginated Response History list with an All/Mentioned/Not-mentioned toggle, Sources + Mentioned Brands leaderboard cards, and a CSV export. Full architecture writeup, including a real state-cascade gotcha worth understanding before editing: **[`PROMPT_DETAIL_HANDOVER.md`](./PROMPT_DETAIL_HANDOVER.md)**. Pure logic is exported as `window.PBPromptDetailLogic` (tested).
 
 ## Filters (top bar)
 
@@ -66,7 +66,7 @@ All plain Node, zero deps, non-zero exit on failure. Current counts (all green):
 
 ```bash
 node tests/todos.logic.test.mjs          # 66 tests: Action Plan engine (rules, cache, merge, looker stats, URL aggregation)
-node tests/prompt-detail.logic.test.mjs  # 49 tests: prompt detail grouping, aggregates, modal formatting
+node tests/prompt-detail.logic.test.mjs  # 87 tests: prompt detail grouping, aggregates, chart series, CSV export, modal formatting
 node tests/sources.test.mjs              # 25 tests: sources view logic
 node tests/competitors.view.test.mjs     # 25 tests: competitors view logic
 node tests/integrations.test.mjs         # 25 tests: integrations view logic

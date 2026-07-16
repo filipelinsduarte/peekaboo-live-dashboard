@@ -121,7 +121,7 @@ All suites are plain Node scripts, zero dependencies, non-zero exit on failure. 
 
 ```bash
 node live-app/tests/todos.logic.test.mjs         # 66 tests: Action Plan engine
-node live-app/tests/prompt-detail.logic.test.mjs # 49 tests: prompt detail page logic
+node live-app/tests/prompt-detail.logic.test.mjs # 87 tests: prompt detail page logic (see live-app/PROMPT_DETAIL_HANDOVER.md)
 node live-app/tests/sources.test.mjs             # 25 tests: sources view logic
 node live-app/tests/competitors.view.test.mjs    # 25 tests: competitors view logic
 node live-app/tests/integrations.test.mjs        # 25 tests: integrations view logic

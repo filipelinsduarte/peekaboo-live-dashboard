@@ -229,6 +229,36 @@ function eqJson(actual, expected, msg) {
   assert.equal(JSON.stringify(actual), JSON.stringify(expected), msg);
 }
 
+// ── filterHistoryByModel ─────────────────────────────────────────────────────
+test('filterHistoryByModel keeps only runs matching the given aiModel', () => {
+  const history = [{ aiModel: 'gemini-2.5-flash', score: 1 }, { aiModel: 'sonar', score: 2 }, { aiModel: 'gemini-2.5-flash', score: 3 }];
+  const r = L.filterHistoryByModel(history, 'gemini-2.5-flash');
+  eqJson(r.map(x => x.score), [1, 3]);
+});
+
+test('filterHistoryByModel returns everything for "all", falsy, or unset model', () => {
+  const history = [{ aiModel: 'sonar' }, { aiModel: 'gpt-4o-mini' }];
+  eqJson(L.filterHistoryByModel(history, 'all'), history);
+  eqJson(L.filterHistoryByModel(history, null), history);
+  eqJson(L.filterHistoryByModel(history, undefined), history);
+  eqJson(L.filterHistoryByModel(history, ''), history);
+});
+
+test('filterHistoryByModel handles empty/nullish history and skips nullish runs', () => {
+  eqJson(L.filterHistoryByModel([], 'sonar'), []);
+  eqJson(L.filterHistoryByModel(null, 'sonar'), []);
+  assert.equal(L.filterHistoryByModel([null, { aiModel: 'sonar' }, undefined], 'sonar').length, 1);
+});
+
+// ── withHistory ──────────────────────────────────────────────────────────────
+test('withHistory swaps only .history, keeping every other field intact', () => {
+  const detail = { promptText: 'hi', category: 'Pain Points', history: [{ id: 'orig' }] };
+  const filtered = [{ id: 'new' }];
+  const clone = L.withHistory(detail, filtered);
+  eqJson(clone, { promptText: 'hi', category: 'Pain Points', history: filtered });
+  eqJson(detail.history, [{ id: 'orig' }]); // original untouched
+});
+
 // ── groupRunsByDate ──────────────────────────────────────────────────────────
 test('groupRunsByDate groups runs by date, newest first', () => {
   const history = [
@@ -265,6 +295,37 @@ test('groupRunsByDate handles empty, nullish, and dateless input', () => {
   assert.equal(groups[0].date, '2026-06-12', 'dated group first');
   assert.equal(groups[1].date, '', 'dateless runs grouped last');
   assert.equal(groups[1].runs[0].runId, 'a');
+});
+
+// ── paginateGroups ───────────────────────────────────────────────────────────
+test('paginateGroups slices into pages of the given size, page 0 is the first 7', () => {
+  const groups = Array.from({ length: 16 }, (_, i) => ({ date: 'day' + i }));
+  const p0 = L.paginateGroups(groups, 7, 0);
+  assert.equal(p0.pageGroups.length, 7);
+  assert.equal(p0.pageGroups[0].date, 'day0');
+  assert.equal(p0.hasPrev, false);
+  assert.equal(p0.hasNext, true);
+  assert.equal(p0.totalPages, 3); // 16 / 7 -> 3 pages (7 + 7 + 2)
+
+  const p2 = L.paginateGroups(groups, 7, 2);
+  assert.equal(p2.pageGroups.length, 2); // remainder page
+  assert.equal(p2.pageGroups[0].date, 'day14');
+  assert.equal(p2.hasNext, false);
+  assert.equal(p2.hasPrev, true);
+});
+
+test('paginateGroups clamps out-of-range pages instead of returning empty', () => {
+  const groups = Array.from({ length: 5 }, (_, i) => ({ date: 'day' + i }));
+  assert.equal(L.paginateGroups(groups, 7, 99).page, 0); // only 1 page exists
+  assert.equal(L.paginateGroups(groups, 7, -5).page, 0);
+});
+
+test('paginateGroups handles empty/nullish input and a non-positive page size', () => {
+  eqJson(L.paginateGroups([], 7, 0), { page: 0, totalPages: 1, pageGroups: [], hasPrev: false, hasNext: false });
+  eqJson(L.paginateGroups(null, 7, 0), { page: 0, totalPages: 1, pageGroups: [], hasPrev: false, hasNext: false });
+  // falsy/invalid pageSize falls back to 7
+  const groups = Array.from({ length: 8 }, (_, i) => ({ date: 'day' + i }));
+  assert.equal(L.paginateGroups(groups, 0, 0).pageGroups.length, 7);
 });
 
 // ── dateAggregates ───────────────────────────────────────────────────────────
@@ -346,6 +407,290 @@ test('topEntities skips blank names/domains and handles empty input', () => {
   eqJson(tops, { topBrands: [], topCites: [] });
   eqJson(L.topEntities(null), { topBrands: [], topCites: [] });
   eqJson(L.topEntities([]), { topBrands: [], topCites: [] });
+});
+
+// ── brandMentionTable (Mentioned Brands card) ───────────────────────────────
+test('brandMentionTable returns every mentioned entity, uncapped, sorted by count desc', () => {
+  const mentions = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(n => ({ entityName: n }));
+  const history = [
+    { brandMentions: mentions },
+    { brandMentions: [{ entityName: 'G' }] },
+  ];
+  const rows = L.brandMentionTable(history);
+  assert.equal(rows.length, 7); // no 5-item cap, unlike topEntities
+  assert.equal(rows[0].name, 'G');
+  assert.equal(rows[0].count, 2);
+});
+
+test('brandMentionTable skips blank names and handles empty/nullish input', () => {
+  eqJson(L.brandMentionTable([{ brandMentions: [{ entityName: '' }, null] }]), []);
+  eqJson(L.brandMentionTable(null), []);
+  eqJson(L.brandMentionTable([]), []);
+});
+
+// ── sourceTable (Sources card) ──────────────────────────────────────────────
+test('sourceTable groups by domain with citation share and per-URL breakdown', () => {
+  const history = [
+    {
+      sources: [
+        { domain: 'a.com', url: 'https://a.com/1', title: 'A One' },
+        { domain: 'a.com', url: 'https://a.com/1', title: 'A One' },
+        { domain: 'b.com', url: 'https://b.com/x', title: 'B X' },
+      ],
+    },
+    { sources: [{ domain: 'a.com', url: 'https://a.com/2', title: 'A Two' }] },
+  ];
+  const rows = L.sourceTable(history);
+  // a.com: 3 of 4 total citations = 75%; b.com: 1 of 4 = 25%
+  eqJson(rows[0], {
+    domain: 'a.com',
+    count: 3,
+    share: 75,
+    urls: [
+      { url: 'https://a.com/1', title: 'A One', count: 2 },
+      { url: 'https://a.com/2', title: 'A Two', count: 1 },
+    ],
+  });
+  eqJson(rows[1], { domain: 'b.com', count: 1, share: 25, urls: [{ url: 'https://b.com/x', title: 'B X', count: 1 }] });
+});
+
+test('sourceTable falls back to the URL as the title when title is missing, and to the domain when url is missing', () => {
+  const history = [{ sources: [{ domain: 'c.com', url: 'https://c.com/p' }, { domain: 'd.com' }] }];
+  const rows = L.sourceTable(history);
+  const byDomain = Object.fromEntries(rows.map(r => [r.domain, r]));
+  assert.equal(byDomain['c.com'].urls[0].title, 'https://c.com/p');
+  assert.equal(byDomain['d.com'].urls[0].url, 'd.com');
+  assert.equal(byDomain['d.com'].urls[0].title, 'd.com');
+});
+
+test('sourceTable skips blank domains and handles empty/nullish input', () => {
+  eqJson(L.sourceTable([{ sources: [{ domain: '' }, null] }]), []);
+  eqJson(L.sourceTable(null), []);
+  eqJson(L.sourceTable([]), []);
+});
+
+// ── domainCitationSeries ─────────────────────────────────────────────────────
+test('domainCitationSeries counts citations per domain per date, ascending dates', () => {
+  const history = [
+    { date: '2026-07-11', sources: [{ domain: 'a.com' }] },
+    { date: '2026-07-09', sources: [{ domain: 'a.com' }, { domain: 'b.com' }, { domain: 'a.com' }] },
+  ];
+  const r = L.domainCitationSeries(history, ['a.com', 'b.com']);
+  eqJson(r.dates, ['2026-07-09', '2026-07-11']);
+  const byName = Object.fromEntries(r.series.map(s => [s.name, s]));
+  eqJson(byName['a.com'].data, [2, 1]);
+  eqJson(byName['b.com'].data, [1, 0]);
+});
+
+test('domainCitationSeries flags the brand\'s own domain isBrand, case-insensitively', () => {
+  const history = [{ date: '2026-07-10', sources: [{ domain: 'flexzo.ai' }] }];
+  const r = L.domainCitationSeries(history, ['Flexzo.ai', 'other.com'], 'flexzo.ai');
+  const byName = Object.fromEntries(r.series.map(s => [s.name, s]));
+  assert.equal(byName['Flexzo.ai'].isBrand, true);
+  assert.equal(byName['other.com'].isBrand, false);
+});
+
+test('domainCitationSeries dedupes domains case-insensitively and handles empty/nullish input', () => {
+  const r = L.domainCitationSeries([], ['a.com', 'A.com', '', null]);
+  assert.equal(r.series.length, 1);
+  eqJson(L.domainCitationSeries(null, []), { dates: [], series: [] });
+  eqJson(L.domainCitationSeries([], null), { dates: [], series: [] });
+});
+
+// ── entityMentionSeries ──────────────────────────────────────────────────────
+test('entityMentionSeries counts raw mention occurrences per entity per date', () => {
+  const history = [
+    { date: '2026-07-10', brandMentions: [{ entityName: 'Flexzo' }, { entityName: 'Nubank' }] },
+    { date: '2026-07-10', brandMentions: [{ entityName: 'Flexzo' }] },
+    { date: '2026-07-11', brandMentions: [{ entityName: 'Nubank' }] },
+  ];
+  const r = L.entityMentionSeries(history, 'Flexzo', ['Nubank']);
+  eqJson(r.dates, ['2026-07-10', '2026-07-11']);
+  const byName = Object.fromEntries(r.series.map(s => [s.name, s]));
+  assert.equal(byName.Flexzo.isBrand, true);
+  eqJson(byName.Flexzo.data, [2, 0]);
+  eqJson(byName.Nubank.data, [1, 1]);
+});
+
+test('entityMentionSeries dedupes a name matching the brand and handles empty/nullish input', () => {
+  const r = L.entityMentionSeries([{ date: '2026-07-10', brandMentions: [] }], 'Flexzo', ['flexzo', 'Nubank']);
+  assert.equal(r.series.length, 2);
+  eqJson(L.entityMentionSeries([], 'Flexzo', []), { dates: [], series: [{ name: 'Flexzo', isBrand: true, data: [] }] });
+  eqJson(L.entityMentionSeries(null, '', []), { dates: [], series: [] });
+});
+
+// ── heatmapColor ─────────────────────────────────────────────────────────────
+test('heatmapColor returns red at 0, yellow at 50, green at 100 (matches competitors.js heatBg)', () => {
+  assert.equal(L.heatmapColor(0), 'rgba(220, 38, 38, 0.88)');
+  assert.equal(L.heatmapColor(50), 'rgba(234, 179, 8, 0.88)');
+  assert.equal(L.heatmapColor(100), 'rgba(22, 163, 74, 0.88)');
+});
+
+test('heatmapColor interpolates between endpoints and clamps out-of-range/non-numeric input', () => {
+  assert.equal(L.heatmapColor(25), 'rgba(227, 109, 23, 0.88)');
+  assert.equal(L.heatmapColor(-10), L.heatmapColor(0));
+  assert.equal(L.heatmapColor(150), L.heatmapColor(100));
+  assert.equal(L.heatmapColor(NaN), L.heatmapColor(0));
+  assert.equal(L.heatmapColor(null), L.heatmapColor(0));
+});
+
+// ── csvEscape / historyToCsv ─────────────────────────────────────────────────
+test('csvEscape only quotes values containing a comma, quote, or newline', () => {
+  assert.equal(L.csvEscape('plain'), 'plain');
+  assert.equal(L.csvEscape('has,comma'), '"has,comma"');
+  assert.equal(L.csvEscape('has "quote"'), '"has ""quote"""');
+  assert.equal(L.csvEscape('line1\nline2'), '"line1\nline2"');
+  assert.equal(L.csvEscape(null), '');
+  assert.equal(L.csvEscape(undefined), '');
+  assert.equal(L.csvEscape(42), '42');
+});
+
+test('historyToCsv emits one row per run with the expected columns', () => {
+  const history = [
+    {
+      date: '2026-07-15', aiModel: 'sonar', score: 67.4, sentiment: 'positive', rank: 2,
+      brandMentions: [{ entityName: 'Flexzo' }, { entityName: 'Nubank' }],
+      sources: [{ domain: 'a.com' }, { domain: 'a.com' }, { domain: 'b.com' }],
+    },
+  ];
+  const csv = L.historyToCsv(history);
+  const lines = csv.split('\r\n');
+  eqJson(lines[0], 'Date,Model,Visibility Score,Sentiment,Avg Position,Mentioned Brands,Citation Count,Cited Domains');
+  eqJson(lines[1], '2026-07-15,sonar,67,positive,2,Flexzo; Nubank,2,a.com; b.com');
+});
+
+test('historyToCsv leaves missing fields blank and quotes a prompt-text-like field with a comma', () => {
+  const csv = L.historyToCsv([{ date: '2026-07-15', aiModel: 'sonar, custom' }]);
+  const lines = csv.split('\r\n');
+  eqJson(lines[1], '2026-07-15,"sonar, custom",,,,,0,');
+});
+
+test('historyToCsv handles empty and nullish history (header row only)', () => {
+  eqJson(L.historyToCsv([]).split('\r\n').length, 1);
+  eqJson(L.historyToCsv(null).split('\r\n').length, 1);
+});
+
+// ── entityVisibilitySeries ──────────────────────────────────────────────────
+test('entityVisibilitySeries uses run.score for the brand and the rank formula for others', () => {
+  const history = [
+    {
+      date: '2026-07-10',
+      score: 67, // brand's own pre-computed score for this run
+      brandMentions: [
+        { entityName: 'Flexzo', rank: 2 },
+        { entityName: 'Nubank', rank: 1 },
+        { entityName: 'Kueski', rank: 3 },
+      ],
+    },
+  ];
+  const r = L.entityVisibilitySeries(history, 'Flexzo', ['Nubank', 'Kueski']);
+  eqJson(r.dates, ['2026-07-10']);
+  const byName = Object.fromEntries(r.series.map(s => [s.name, s]));
+  // brand: straight from run.score, not recomputed from rank
+  assert.equal(byName.Flexzo.isBrand, true);
+  eqJson(byName.Flexzo.data, [67]);
+  // Nubank ranked #1 of 3 mentioned -> ((3-1+1)/3)*100 = 100
+  eqJson(byName.Nubank.data, [100]);
+  // Kueski ranked #3 of 3 mentioned -> ((3-3+1)/3)*100 = 33.3
+  eqJson(byName.Kueski.data, [33.3]);
+});
+
+test('entityVisibilitySeries scores an unmentioned competitor as 0', () => {
+  const history = [{ date: '2026-07-10', score: 50, brandMentions: [{ entityName: 'Flexzo', rank: 1 }] }];
+  const r = L.entityVisibilitySeries(history, 'Flexzo', ['Nubank']);
+  const byName = Object.fromEntries(r.series.map(s => [s.name, s]));
+  eqJson(byName.Nubank.data, [0]);
+});
+
+test('entityVisibilitySeries averages multiple runs on the same date and sorts dates ascending', () => {
+  const history = [
+    { date: '2026-07-11', score: 80, brandMentions: [{ entityName: 'Flexzo', rank: 1 }] },
+    { date: '2026-07-09', score: 20, brandMentions: [{ entityName: 'Flexzo', rank: 1 }] },
+    { date: '2026-07-09', score: 40, brandMentions: [{ entityName: 'Flexzo', rank: 1 }] },
+  ];
+  const r = L.entityVisibilitySeries(history, 'Flexzo', []);
+  eqJson(r.dates, ['2026-07-09', '2026-07-11']);
+  eqJson(r.series[0].data, [30, 80]); // (20+40)/2 = 30
+});
+
+test('entityVisibilitySeries dedupes a name that matches the brand and handles empty/nullish input', () => {
+  const history = [{ date: '2026-07-10', score: 60, brandMentions: [] }];
+  const r = L.entityVisibilitySeries(history, 'Flexzo', ['flexzo', 'Nubank']);
+  assert.equal(r.series.length, 2); // 'flexzo' collapses into the brand entry, not a duplicate
+  assert.equal(r.series[0].name, 'Flexzo');
+  assert.equal(r.series[1].name, 'Nubank');
+
+  eqJson(L.entityVisibilitySeries([], 'Flexzo', []), { dates: [], series: [{ name: 'Flexzo', isBrand: true, data: [] }] });
+  eqJson(L.entityVisibilitySeries(null, '', []), { dates: [], series: [] });
+});
+
+// ── brandMentionCount ────────────────────────────────────────────────────────
+test('brandMentionCount counts runs with score > 0, ignoring 0/null/missing scores', () => {
+  const history = [{ score: 100 }, { score: 0 }, { score: null }, { score: 50 }, {}];
+  assert.equal(L.brandMentionCount(history), 2);
+});
+
+test('brandMentionCount handles empty and nullish history', () => {
+  assert.equal(L.brandMentionCount([]), 0);
+  assert.equal(L.brandMentionCount(null), 0);
+});
+
+// ── filterHistoryByMentionState ─────────────────────────────────────────────
+test('filterHistoryByMentionState "mentioned" keeps only runs with score > 0', () => {
+  const history = [{ id: 'a', score: 100 }, { id: 'b', score: 0 }, { id: 'c', score: null }, { id: 'd', score: 50 }, { id: 'e' }];
+  eqJson(L.filterHistoryByMentionState(history, 'mentioned').map(r => r.id), ['a', 'd']);
+});
+
+test('filterHistoryByMentionState "not-mentioned" keeps only runs with score 0/null/missing', () => {
+  const history = [{ id: 'a', score: 100 }, { id: 'b', score: 0 }, { id: 'c', score: null }, { id: 'd', score: 50 }, { id: 'e' }];
+  eqJson(L.filterHistoryByMentionState(history, 'not-mentioned').map(r => r.id), ['b', 'c', 'e']);
+});
+
+test('filterHistoryByMentionState "all" (or an unrecognized mode) returns the list unchanged', () => {
+  const history = [{ id: 'a', score: 100 }, { id: 'b', score: 0 }];
+  eqJson(L.filterHistoryByMentionState(history, 'all'), history);
+  eqJson(L.filterHistoryByMentionState(history, 'bogus'), history);
+  eqJson(L.filterHistoryByMentionState(history), history);
+});
+
+test('filterHistoryByMentionState handles empty and nullish history', () => {
+  eqJson(L.filterHistoryByMentionState([], 'mentioned'), []);
+  eqJson(L.filterHistoryByMentionState(null, 'mentioned'), []);
+});
+
+// ── classifyContentType / topContentType ────────────────────────────────────
+test('classifyContentType detects blog, listicle, comparison, case study, news, review, careers', () => {
+  assert.equal(L.classifyContentType({ url: 'https://x.com/blog/post', title: 'A post' }), 'Blog');
+  assert.equal(L.classifyContentType({ url: 'https://x.com/top-10-tools', title: 'Top 10 Tools for X' }), 'Listicle');
+  assert.equal(L.classifyContentType({ url: 'https://x.com/y', title: 'Acme vs Beta: which is better?' }), 'Comparison');
+  assert.equal(L.classifyContentType({ url: 'https://x.com/use-cases/acme', title: 'Acme case study' }), 'Case Study');
+  assert.equal(L.classifyContentType({ url: 'https://x.com/y', title: 'Acme raises $10m in funding' }), 'News');
+  assert.equal(L.classifyContentType({ url: 'https://x.com/y', title: 'Acme review: is it worth it?' }), 'Review');
+  assert.equal(L.classifyContentType({ url: 'https://x.com/careers', title: 'Careers at Acme' }), 'Careers Page');
+});
+
+test('classifyContentType falls back to Company Page and handles nullish input', () => {
+  assert.equal(L.classifyContentType({ url: 'https://x.com/', title: 'Acme Home' }), 'Company Page');
+  assert.equal(L.classifyContentType({}), 'Company Page');
+  assert.equal(L.classifyContentType(null), 'Company Page');
+});
+
+test('classifyContentType checks Listicle before Blog when a URL matches both', () => {
+  assert.equal(L.classifyContentType({ url: 'https://x.com/blog/top-10-alternatives', title: 'Top 10 Alternatives' }), 'Listicle');
+});
+
+test('topContentType returns the most-cited type across all runs, tie-broken alphabetically', () => {
+  const history = [
+    { sources: [{ url: 'a.com/blog/x', title: 'x' }, { url: 'a.com/', title: 'home' }] },
+    { sources: [{ url: 'a.com/blog/y', title: 'y' }] },
+  ];
+  assert.equal(L.topContentType(history), 'Blog');
+});
+
+test('topContentType returns null for empty/missing sources', () => {
+  assert.equal(L.topContentType([{ sources: [] }, { sources: null }]), null);
+  assert.equal(L.topContentType([]), null);
+  assert.equal(L.topContentType(null), null);
 });
 
 // ── previewText ──────────────────────────────────────────────────────────────
